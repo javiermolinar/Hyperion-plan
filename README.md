@@ -6,6 +6,16 @@
 
 Hyperion Plan gives you control over how Codex tackles substantial engineering work. Turn a migration, refactor, or feature into an interactive plan with clear scope, dependencies, acceptance criteria, and review checkpoints. Refine the approach, select the work to implement, and keep the reasoning and results attached to the plan as the code changes.
 
+## Install
+
+Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
+
+```text
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/main/skills/plan-companion
+```
+
+Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$plan-companion`.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hyperion-plan-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/hyperion-plan-light.png">
@@ -32,7 +42,3 @@ Finish a plan when you are done using it. **Finish plan** stops automatic cards 
 3. Click **Implement** to send that selection to Codex. Review its results in the refreshed plan before choosing what comes next.
 
 The plan lives in Markdown alongside revision and approval bookkeeping. You and Codex can revisit it across turns, and agents can inspect or update it through the bundled CLI. Interactive cards run inside the Codex conversation through Visualize; the CLI requires Node.js 22 or newer.
-
-## Install
-
-Marketplace release coming soon. The installation link will appear here when Hyperion Plan is published.
