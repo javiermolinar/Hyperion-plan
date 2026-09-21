@@ -11,10 +11,12 @@ Hyperion Plan gives you control over how Codex tackles substantial engineering w
 Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/main/skills/plan-companion
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/main/skills/hyperion-plan
 ```
 
-Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$plan-companion`.
+Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$hyperion-plan`.
+
+Upgrading from v1.0.0? Remove the old `plan-companion` skill after installing `hyperion-plan`, then ask Codex to refresh existing plan cards.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hyperion-plan-dark.png">

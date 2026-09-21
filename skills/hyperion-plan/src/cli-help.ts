@@ -162,7 +162,7 @@ export function help(command?: string): string {
   const spec = command ? commandHelp[command] : undefined;
   if (spec)
     return [
-      `Plan Companion — ${command}`,
+      `Hyperion Plan — ${command}`,
       spec.summary,
       `Usage: node dist/plan.cjs ${command} --plan PATH [options]`,
       "",
@@ -182,7 +182,7 @@ export function help(command?: string): string {
     ([name]) => !command || name.startsWith(command + " "),
   );
   return [
-    "Plan Companion — versioned Markdown plans",
+    "Hyperion Plan — versioned Markdown plans",
     "Usage: node dist/plan.cjs COMMAND --plan PATH [options]",
     "",
     ...entries.map(([name, entry]) => `  ${name.padEnd(15)} ${entry.summary}`),

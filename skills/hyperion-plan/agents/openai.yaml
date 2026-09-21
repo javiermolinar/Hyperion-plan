@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hyperion Plan"
+  short_description: "Review plans and choose which steps Codex implements"
+  default_prompt: "Use $hyperion-plan to show the current task plan with selectable steps, expandable details, and notes."

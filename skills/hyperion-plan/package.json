@@ -1,6 +1,6 @@
 {
-  "name": "plan-companion",
-  "version": "1.0.0",
+  "name": "hyperion-plan",
+  "version": "1.0.1",
   "private": true,
   "description": "Markdown-backed interactive plans and an on-demand local CLI",
   "type": "module",
@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "bin": {
-    "plan-companion": "dist/plan.cjs"
+    "hyperion-plan": "dist/plan.cjs"
   },
   "scripts": {
     "build": "tsc --noEmit && node build/build.mjs",

@@ -1675,7 +1675,7 @@ declare global {
           ? " Replan dependencies of the target_step_ids so a later removal can be considered. Identify every dependent by name, including run_after references and review coverage. Rewire only when the actual requirements support it; otherwise explain the concrete decision needed. Preserve the target, completed history, and active work. Do not delete steps, revert code, or start implementation. Clear affected freshness warnings only after checking the revised plan."
           : "";
     const prompt =
-      "Use $plan-companion. Read the skill at " +
+      "Use $hyperion-plan. Read the skill at " +
       config.skill_path +
       ".\nPlan file: " +
       config.plan_path +

@@ -21,6 +21,12 @@ for (const [index, c] of fixture.cases.entries())
       return;
     }
     const actual = api[c.fn](...c.args);
+    if (c.fn === "prNotes") {
+      // Only the public product heading changed; preserve every captured
+      // requirement and evidence field in the immutable baseline.
+      assert.equal(actual, c.result.replace(/^# Plan Companion — PR notes/, "# Hyperion Plan — PR notes"));
+      return;
+    }
     if (c.fn === "summary") {
       // Lifecycle adds explicit defaults for legacy plans; all original fields
       // must still match the immutable Python fixture exactly.

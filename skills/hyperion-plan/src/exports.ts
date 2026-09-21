@@ -103,7 +103,7 @@ export function reviewBrief(plan: Plan, stepId: string): string {
 export function prNotes(plan: Plan): string {
   validate(plan);
   const lines = [
-    "# Plan Companion — PR notes",
+    "# Hyperion Plan — PR notes",
     "",
     `Generated from plan \`${plan.plan_id}\`, revision ${plan.revision}. Regenerated on plan saves; edit the plan, not this file.`,
     "",

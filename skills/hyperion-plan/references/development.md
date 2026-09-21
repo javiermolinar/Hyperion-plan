@@ -1,6 +1,6 @@
 # Source layout and testing
 
-The maintained implementation is TypeScript. This skill is self-contained inside the plugin's `skills/plan-companion/` directory; it can also be installed as a standalone skill.
+The maintained implementation is TypeScript. This skill is self-contained inside the plugin's `skills/hyperion-plan/` directory; it can also be installed as a standalone skill.
 
 - `src/model.ts`: shared plan, step, note, request, and operation types; runtime validation; prerequisites; history guards and edit transitions used by CLI and browser draft replay.
 - `src/transitions.ts`: request authorization, receipts, revisions, progress, and freshness.
@@ -21,8 +21,8 @@ Keep generated plans, rendered revisions, review evidence, and receipts outside 
 Node.js 22 or newer is required. The shipped bundles include runtime dependencies; using the CLI requires no Python, TypeScript compiler, npm install, network, MCP server, or persistent process. Run it from any working directory:
 
 ```sh
-node /absolute/path/to/plan-companion/dist/plan.cjs --help
-node /absolute/path/to/plan-companion/dist/plan.cjs status --plan /absolute/path/to/plan.md
+node /absolute/path/to/hyperion-plan/dist/plan.cjs --help
+node /absolute/path/to/hyperion-plan/dist/plan.cjs status --plan /absolute/path/to/plan.md
 ```
 
 To modify the source, run from this skill directory:
@@ -37,7 +37,7 @@ npm test
 
 ## Compatibility coverage
 
-`tests/fixtures/python-baseline.json` freezes 424 observed success/error cases captured from the immutable reviewed Python baseline while its 52 tests passed. Each case names the originating test and function. The fixture is data, not another implementation. It covers validation, request idempotency and selection, progress, pause/cancel, review placement/scope, freshness, Markdown parsing/serialization, fingerprints, and exports.
+`tests/fixtures/python-baseline.json` freezes 424 observed success/error cases captured from the immutable reviewed Python baseline while its 52 tests passed. Each case names the originating test and function. The fixture is data, not another implementation. It covers validation, request idempotency and selection, progress, pause/cancel, review placement/scope, freshness, Markdown parsing/serialization, fingerprints, and exports. The PR-notes comparison permits the renamed product heading while checking the remaining output unchanged.
 
 `tests/storage.test.cjs` separately exercises real CLI/filesystem behavior: old Python-written Markdown, sidecars and receipts; both former P1 defects; direct edits; invalid source preservation; migration/redirects; recovery after repeated interrupted sidecar writes; export failure; and concurrent CLI writes. These are necessary because pure-function compatibility fixtures do not test disk writes or locking. The fixtures in `tests/fixtures/legacy/` are Python-written storage with Unicode content and existing approval.
 
@@ -66,6 +66,8 @@ The eight suites generate cards using the compiled CLI and remove temporary work
 `tests/reordering.test.cjs` checks shared order validation, dependency and review constraints, preserved history under combined edits, unchanged authorization, receipts, stale rejection, and Markdown/PR-note persistence. Order changes move pending tasks by insertion; protected records keep their relative order and contents, although displayed step numbers can change.
 
 ## Migrating an existing installation
+
+The skill and command are now named `hyperion-plan`. Install the renamed skill and remove the old `plan-companion` installation to avoid duplicate entries. The `plan-companion` Markdown marker, redirect format, and saved widget-state identifiers remain unchanged so existing plans and drafts stay compatible. Previously rendered cards still reference the old skill name and installation path; render a fresh card with the new CLI before submitting changes.
 
 Existing Markdown, sidecars, JSON redirects, and published cards need no conversion. The CLI preserves legacy request digests and step fingerprints, so an unchanged step retains its approval. Skill instructions now invoke `node SKILL_DIR/dist/plan.cjs`; update any personal shell aliases using the former Python entrypoint.
 

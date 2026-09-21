@@ -1,9 +1,9 @@
 ---
-name: plan-companion
-description: Maintain interactive task plans with prerequisites, complexity, decomposition, progress, and an explicit finish/reopen lifecycle. Use for plan requests, Plan Companion submissions, and continuing an active plan. Finished plans stay quiet unless explicitly shown or reopened. Supplements native Plan mode.
+name: hyperion-plan
+description: Maintain interactive task plans with prerequisites, complexity, decomposition, progress, and an explicit finish/reopen lifecycle. Use for plan requests, Hyperion Plan submissions, and continuing an active plan. Finished plans stay quiet unless explicitly shown or reopened. Supplements native Plan mode.
 ---
 
-# Plan Companion
+# Hyperion Plan
 
 Render and revise the current task's actual plan in an inline card. This is a local proof of concept with agent-mediated synchronization, not a subscription to native Plan mode events. Use Node.js 22 or newer for the bundled `dist/plan.cjs` CLI. Require the available `visualize` skill for inline display and read it before rendering; its host provides the follow-up action.
 
