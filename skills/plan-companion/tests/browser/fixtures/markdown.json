@@ -1,0 +1,29 @@
+{
+  "title": "Markdown persistence check",
+  "steps": [
+    {
+      "id": "build",
+      "title": "Preserve selection",
+      "description": "Run only the selected work.",
+      "done_when": "Unselected tasks remain for later.",
+      "status": "completed",
+      "comments": [{"id":"keyboard","text":"Keyboard users can operate each control.","state":"pending"}]
+    },
+    {
+      "id": "later",
+      "title": "Polish mobile interactions",
+      "description": "Preserve focus on narrow screens.",
+      "status": "pending"
+    },
+    {
+      "id": "review",
+      "kind": "review",
+      "title": "Review selection",
+      "description": "Inspect the chosen implementation in a fresh task.",
+      "depends_on": ["build"],
+      "run_after": "build",
+      "checks": ["Selection never marks work complete.","Notes and checks remain in Markdown."],
+      "status": "pending"
+    }
+  ]
+}

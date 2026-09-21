@@ -1,0 +1,18 @@
+{
+  "name": "plan-companion",
+  "version": "1.0.0",
+  "description": "Interactive Markdown plans with a local TypeScript CLI",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Plan Companion",
+    "shortDescription": "Plan, select, and track work in an inline card.",
+    "longDescription": "Maintain Markdown task plans, preserve execution approvals and completed history, and render interactive cards through Visualize. Includes a compiled on-demand Node CLI; no server or hooks.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Plan Companion to make an interactive plan for this task."
+  }
+}

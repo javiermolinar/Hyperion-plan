@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "plan_id": "4424ba82-9c81-4075-80ba-af9d064f51fd",
+  "revision": 2,
+  "title": "Portable migration → á 😀",
+  "steps": [
+    {
+      "id": "done",
+      "title": "Completed work",
+      "status": "completed",
+      "description": "Preserve the intent",
+      "progress_note": "Observed test evidence",
+      "comments": [
+        {
+          "id": "intent",
+          "state": "acknowledged",
+          "text": "Retain keyboard access",
+          "response": "Verified in baseline"
+        }
+      ],
+      "done_when": "",
+      "completion_source": "agent"
+    },
+    {
+      "id": "active",
+      "title": "Active work",
+      "status": "in_progress",
+      "description": "",
+      "done_when": "",
+      "comments": []
+    },
+    {
+      "id": "work",
+      "title": "Pending work",
+      "description": "Unchanged authorized scope → 😀",
+      "done_when": "",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "other",
+      "title": "Independent work",
+      "description": "",
+      "done_when": "",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "review",
+      "title": "Review work",
+      "kind": "review",
+      "depends_on": [
+        "done"
+      ],
+      "run_after": "done",
+      "checks": [
+        "Check history",
+        "Check á and 😀"
+      ],
+      "description": "",
+      "done_when": "",
+      "status": "pending",
+      "comments": []
+    }
+  ],
+  "applied_requests": {
+    "python-approval": "dbfd415aee1577b14600c7a1e58d53170d233e424db108f7ff0beaca92af6fb9"
+  },
+  "execution": {
+    "request_id": "python-approval",
+    "state": "approved",
+    "selected_step_ids": [
+      "work",
+      "other",
+      "review"
+    ]
+  }
+}

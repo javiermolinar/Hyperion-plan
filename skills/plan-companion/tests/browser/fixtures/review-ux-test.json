@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "plan_id": "c3f1155f-1928-407f-a05a-85598bc4b6f0",
+  "revision": 1,
+  "title": "Plan Companion \u2014 review checkpoints",
+  "steps": [
+    {
+      "id": "selection",
+      "title": "Implement selective execution",
+      "short_title": "Selection",
+      "status": "completed",
+      "description": "Run only explicitly selected steps. Preserve the rest for later turns.",
+      "complexity": "moderate",
+      "complexity_reason": "Selection must survive saved drafts and retries.",
+      "done_when": "",
+      "comments": [
+        {
+          "id": "coverage-intent",
+          "text": "Keyboard users must be able to select and inspect steps.",
+          "state": "pending"
+        }
+      ],
+      "completion_source": "agent"
+    },
+    {
+      "id": "progress",
+      "title": "Preserve progress between turns",
+      "short_title": "Progress",
+      "status": "completed",
+      "description": "Save partial completion without resetting unfinished work. Sample progress.",
+      "complexity": "moderate",
+      "complexity_reason": "Completed work and remaining scope must stay consistent.",
+      "done_when": "",
+      "comments": [],
+      "completion_source": "agent"
+    },
+    {
+      "id": "review-selection",
+      "kind": "review",
+      "title": "Review selection and progress",
+      "description": "A fresh Codex task checks this code snapshot and reports back here.",
+      "depends_on": [
+        "selection",
+        "progress"
+      ],
+      "checks": [
+        "Only selected work runs; remaining steps stay available.",
+        "Notes, removal, undo, and saved drafts still work.",
+        "Stale requests, retries, and failed submissions behave correctly.",
+        "Relevant tests pass and cover these behaviors."
+      ],
+      "done_when": "All checks have evidence for the reviewed snapshot, with no blocking findings.",
+      "status": "pending",
+      "comments": [],
+      "run_after": "progress"
+    },
+    {
+      "id": "polish",
+      "title": "Polish mobile interactions",
+      "short_title": "Mobile interactions",
+      "description": "Refine touch targets and wrapping on narrow screens.",
+      "done_when": "Selection and review controls fit and remain usable at 320px.",
+      "status": "pending",
+      "complexity": "low",
+      "complexity_reason": "Limited changes to established layout and controls.",
+      "comments": []
+    }
+  ],
+  "applied_requests": {}
+}

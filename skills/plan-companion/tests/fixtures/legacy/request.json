@@ -1,0 +1,12 @@
+{
+  "plan_id": "4424ba82-9c81-4075-80ba-af9d064f51fd",
+  "base_revision": 1,
+  "request_id": "python-approval",
+  "intent": "implement",
+  "selected_step_ids": [
+    "work",
+    "other",
+    "review"
+  ],
+  "operations": []
+}

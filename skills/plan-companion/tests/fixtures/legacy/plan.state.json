@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "plan_id": "4424ba82-9c81-4075-80ba-af9d064f51fd",
+  "revision": 2,
+  "source_digest": "96278d76735760a607e4d40a740fd5714071d3ff7cfe0a51610623a06d55070d",
+  "applied_requests": {
+    "python-approval": "dbfd415aee1577b14600c7a1e58d53170d233e424db108f7ff0beaca92af6fb9"
+  },
+  "steps": {
+    "done": {
+      "status": "completed",
+      "scope": "80c61e8fadceb5969ea244ae4bc10633892ef3497ca6bf62d145fe3e6fe20884"
+    },
+    "active": {
+      "status": "in_progress",
+      "scope": "87c3ec9ade35eb61f5c8c3561bf4a1e8db8395e33c572aaef7e26e54994d032e"
+    },
+    "work": {
+      "status": "pending",
+      "scope": "2bbf6bfc0e5c526564e9bfa3e3f17b1a67505f91fb3e2e96d090a8ef6bfef8fe"
+    },
+    "other": {
+      "status": "pending",
+      "scope": "2901dd1d918365a4291f460ada893f31d191cf49079cbd8352a76fb9e70db2ec"
+    },
+    "review": {
+      "status": "pending",
+      "scope": "547f7adc7128b91c7f25c947e24f1224d73e33f9becfe4015b77273c1e867823"
+    }
+  },
+  "execution": {
+    "request_id": "python-approval",
+    "state": "approved",
+    "selected_step_ids": [
+      "work",
+      "other",
+      "review"
+    ]
+  }
+}

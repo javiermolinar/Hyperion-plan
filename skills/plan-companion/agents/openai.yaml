@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Companion"
+  short_description: "Review plans and choose which steps Codex implements"
+  default_prompt: "Use $plan-companion to show the current task plan with selectable steps, expandable details, and notes."

@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "plan_id": "4b65c031-56f9-4b90-943c-78d59277a398",
+  "revision": 1,
+  "title": "AgentDebugger — monorepo, DAP, native collaboration and session history",
+  "steps": [
+    {
+      "id": "monorepo",
+      "title": "Establish the AgentDebugger monorepo",
+      "description": "Organize the debugger components into the shared repository.",
+      "done_when": "The shared workspace builds and its component boundaries are documented.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "api-client",
+      "title": "Define the shared API and TypeScript client",
+      "description": "Define the common API and the TypeScript client used by the interfaces.",
+      "done_when": "The interfaces can use the shared client against the agreed API.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "dap",
+      "title": "Migrate the backend connection to DAP",
+      "description": "Move debugger communication to the Debug Adapter Protocol.",
+      "done_when": "A client can connect, inspect a paused process, and continue execution.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "history",
+      "title": "Record durable session history in the core",
+      "description": "Keep session events available after the live investigation ends.",
+      "done_when": "Recorded events can be read after reconnecting.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "coordination",
+      "title": "Replace explicit handover with execution coordination",
+      "description": "Coordinate execution when multiple interfaces share a session.",
+      "done_when": "Clients can share a session without conflicting execution commands.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "webui",
+      "title": "Simplify the standalone WebUI",
+      "description": "Reduce the interface to the essential debugging controls and session context.",
+      "done_when": "The main inspection flow remains accessible with fewer controls.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "vscode",
+      "title": "Add collaboration to the native VS Code debugger",
+      "description": "Connect the native editor debugging experience to the shared session.",
+      "done_when": "The editor can inspect and control the shared debug session.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "export",
+      "title": "Browse and export ended investigations",
+      "description": "Review a completed investigation and export its recorded history.",
+      "done_when": "A completed session can be opened and exported.",
+      "status": "pending",
+      "comments": []
+    },
+    {
+      "id": "validate",
+      "title": "Update harnesses, package, and validate end to end",
+      "description": "Exercise the complete workflow and prepare the distributable package.",
+      "done_when": "The agreed end-to-end scenarios pass against the packaged version.",
+      "status": "pending",
+      "comments": []
+    }
+  ],
+  "applied_requests": {}
+}

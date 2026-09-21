@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "plan_id": "19e71e12-6a43-4eac-a091-79b7dd0b759d",
+  "revision": 2,
+  "source_digest": "cb666652842a0be7b37011619eb730ee7314ef07e21a93d0771f638f50efdba4",
+  "applied_requests": {
+    "numeric-approval": "5ea76e0a60297e844019f41b5d07298fe15158e38268a9b8279b3dc2e94a9e98"
+  },
+  "steps": {
+    "a": {
+      "status": "pending",
+      "scope": "a2ecf4daa79e8b6b34e9fa544e633003f9d6175f38a4d35ad22c3e69f3559f7f"
+    },
+    "b": {
+      "status": "pending",
+      "scope": "d1ab370e4f03af1b3d15b84bb854abb204f4f20e2b3b795aa8b723a3002eb167"
+    }
+  },
+  "execution": {
+    "request_id": "numeric-approval",
+    "state": "approved",
+    "selected_step_ids": [
+      "a",
+      "b"
+    ]
+  }
+}
