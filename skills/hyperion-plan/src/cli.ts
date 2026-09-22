@@ -26,6 +26,7 @@ import {
   checkpoint,
   setLifecycle,
   reviewStep,
+  updatePlanReview,
   summary,
   digestText,
 } from "./transitions";
@@ -77,7 +78,7 @@ async function main() {
   const arg = (k: string) =>
     typeof v[k] === "string" ? (v[k] as string) : undefined;
   require(arg("plan"), "Missing --plan");
-  for (const key of ["init", "revise"].includes(command)
+  for (const key of ["init", "revise", "plan-review"].includes(command)
     ? ["input"]
     : command === "apply"
       ? ["request"]
@@ -90,7 +91,7 @@ async function main() {
       ? Number(arg("base-revision"))
       : undefined;
   const targeted = command.startsWith("step ") || command.startsWith("note ");
-  if (["revise", "checkpoint", "review", "finish", "reopen"].includes(command) || targeted)
+  if (["revise", "checkpoint", "review", "finish", "reopen", "plan-review"].includes(command) || targeted)
     require(Number.isSafeInteger(
       revision,
     ), "Missing or invalid --base-revision");
@@ -285,6 +286,8 @@ async function main() {
         arg("blocked-by"),
         arg("execution-state") as ExecutionState | undefined,
       );
+    else if (command === "plan-review")
+      [plan, changed] = updatePlanReview(current!, revision!, read(arg("input")!));
     else if (command === "review")
       [plan, changed] = reviewStep(
         current!,

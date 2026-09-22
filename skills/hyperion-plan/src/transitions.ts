@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   Plan,
+  PlanReview,
   Step,
   ChangeRequest,
   Status,
@@ -106,6 +107,9 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
   ), "Invalid request intent");
   require(Array.isArray(operations) &&
     operations.length <= 100, "Expected at most 100 operations");
+  require(request.review_mode === undefined || (intent === "review" && ["refresh", "independent"].includes(request.review_mode)), "Invalid review mode");
+  require(request.review_focus === undefined || (intent === "review" && request.review_mode === "independent" && typeof request.review_focus === "string" && request.review_focus.length <= 2000), "Invalid review focus");
+  const independent = intent === "review" && request.review_mode === "independent";
   const selected =
       request.selected_step_ids === undefined ? [] : request.selected_step_ids,
     targets =
@@ -173,6 +177,13 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       state: "approved",
       selected_step_ids: clone(selected),
     };
+  } else if (independent) {
+    require(!result.plan_reviews?.some(r => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
+    for (const sid of targets) require(Object.hasOwn(available, sid), `Planning target is absent: ${sid}`);
+    result.plan_reviews = [...(result.plan_reviews ?? []), {
+      request_id: rid, revision: result.revision + 1, target_step_ids: clone(targets),
+      focus: request.review_focus ?? "", state: "requested", findings: [],
+    }];
   } else if (intent === "replan") {
     for (const sid of targets)
       require(Object.hasOwn(
@@ -221,6 +232,7 @@ export function revise(plan: Plan, replacement: Plan, revision: number): Plan {
   preserveHistory(oldSteps, result.steps);
   result.revision = revision + 1;
   result.applied_requests = clone(plan.applied_requests ?? {});
+  if (plan.plan_reviews) result.plan_reviews = clone(plan.plan_reviews);
   delete result.execution;
   if (plan.execution != null) {
     result.execution = clone(plan.execution);
@@ -416,10 +428,30 @@ export function summary(plan: Plan) {
     lifecycle: plan.lifecycle ?? "active",
     render_policy: plan.lifecycle === "finished" ? "on_request" : "on_change",
     execution,
+    ...(plan.plan_reviews ? { plan_reviews: clone(plan.plan_reviews) } : {}),
     steps: plan.steps.map((step) =>
       Object.fromEntries(
         fields.filter((k) => k in step).map((k) => [k, step[k]]),
       ),
     ),
   };
+}
+
+/** Record reviewer progress without granting implementation authority. */
+export function updatePlanReview(plan: Plan, revision: number, value: unknown): [Plan, boolean] {
+  validate(plan);
+  requireActive(plan);
+  require(plan.revision === revision, `Stale plan: current revision ${plan.revision}`);
+  require(record(value), "Invalid plan review update");
+  require(Object.keys(value).every(k => ["request_id", "state", "task_id", "report_path", "note", "findings"].includes(k)), "Unexpected plan review field");
+  const result = clone(plan);
+  const review = result.plan_reviews?.find(r => r.request_id === value.request_id);
+  require(review, "Unknown plan review request");
+  require(value.state !== "requested", "Cannot restart a review request");
+  require(review.state !== "completed" || value.state === undefined || value.state === "completed", "Cannot restart a completed review");
+  require(!review.task_id || value.task_id === undefined || value.task_id === review.task_id, "Preserve the original reviewer task");
+  Object.assign(review, value as Partial<PlanReview>);
+  if (equal(plan, result)) return [result, false];
+  result.revision++;
+  return [validate(result), true];
 }

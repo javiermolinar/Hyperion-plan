@@ -33,6 +33,7 @@ interface SavedDraft {
     selected_step_ids?: string[];
   };
   privateContent?: {
+    review_focus?: string;
     expanded?: string[];
     milestones?: Record<string, boolean>;
     settings?: string[];
@@ -97,6 +98,7 @@ declare global {
     sending: Intent | false = false,
     requestIds: Record<string, string | null> = {},
     interacted = false;
+  let reviewFocus = "";
   let dragging: string | null = null;
   let dragPointer: {
     id: number;
@@ -439,6 +441,7 @@ declare global {
         settings: [...settings],
         milestones,
         request_ids: requestIds,
+        review_focus: reviewFocus,
         note_editors: [...notes]
           .filter(([id]) => draft.some((s) => s.id === id))
           .map(([step_id, n]) => ({ step_id, id: n.id })),
@@ -518,6 +521,7 @@ declare global {
           ? saved.privateContent.settings
           : [],
       );
+      reviewFocus = typeof saved.privateContent?.review_focus === "string" ? saved.privateContent.review_focus.slice(0, 2000) : "";
       requestIds =
         (state.ui_version === 3 && saved.privateContent?.request_ids) || {};
       // Host environment updates can repeat a saved draft. Keep the existing
@@ -695,9 +699,81 @@ declare global {
     return remaining.slice(0, reviewIndex < 0 ? undefined : reviewIndex)
       .filter(s => ready.includes(s) && !broad(s)).slice(0, 3);
   }
+  function renderPlanReviews() {
+    let strip = root.querySelector<HTMLElement>(".pc-plan-reviews");
+    if (!strip) { strip = el("div", "pc-plan-reviews"); q(".pc-next").before(strip); }
+    strip.replaceChildren();
+    for (const review of base.plan_reviews ?? []) {
+      const details = el("details");
+      const label = review.state === "completed" ? `Review complete · ${review.findings.length} ${review.findings.length === 1 ? "finding" : "findings"}`
+        : `Independent review ${review.state}`;
+      details.append(el("summary", "", `${label} · ${review.state === "running" ? "Reviewing" : "Plan"} revision ${review.revision}`));
+      if (review.task_id) {
+        const link = el("a", "", "Open review task");
+        link.href = `codex://threads/${encodeURIComponent(review.task_id)}`;
+        details.append(link);
+      }
+      if (review.focus) details.append(el("p", "", "Focus: " + review.focus));
+      if (review.note) details.append(el("p", "", review.note));
+      if (review.report_path) details.append(el("p", "", "Report: " + review.report_path));
+      for (const finding of review.findings) {
+        const item = el("div", "pc-plan-finding");
+        item.append(el("strong", "", ({ applied: "Applied", not_adopted: "Not adopted", needs_input: "Needs your input" })[finding.resolution]));
+        item.append(el("p", "", finding.text));
+        for (const id of finding.step_ids) {
+          const step = byId(id);
+          item.append(step ? btn(step.title, "pc-step-link", () => openStep(id)) : el("span", "", id));
+        }
+        item.append(el("p", "", finding.reason));
+        details.append(item);
+      }
+      strip.append(details);
+    }
+    strip.hidden = !base.plan_reviews?.length;
+  }
+  function openPlanReview(selectedScope = false) {
+    root.querySelector(".pc-plan-review-dialog")?.remove();
+    const dialog = el("dialog", "pc-plan-review-dialog");
+    dialog.setAttribute("aria-label", "Review plan");
+    const heading = el("h3", "", "Review plan");
+    const body = el("div");
+    dialog.append(heading, body, btn("Cancel", "", () => dialog.close()));
+    const targets = () => selectedScope ? selection() : draft.filter(s => s.status !== "completed").map(s => s.id);
+    body.append(btn("Refresh plan", "pc-refresh-plan", () => { dialog.close(); submit("review", targets()); }),
+      el("p", "", "Check steps against current code and update assumptions, dependencies, and estimates."));
+    const independent = btn("Independent review", "pc-independent-review", () => {
+      heading.textContent = "Independent plan review";
+      body.replaceChildren(el("p", "", "A fresh agent will inspect your requirements, this plan, and relevant code. Findings return here and are reconciled into this plan."));
+      const scopeLabel = el("label", "", "Scope");
+      const scope = el("select", "pc-plan-review-scope");
+      scope.setAttribute("aria-label", "Review scope");
+      for (const [value, text] of [["all", "Entire plan"], ["selected", "Selected steps"]]) {
+        const option = el("option", "", text); option.value = value;
+        option.disabled = value === "selected" && !selection().length;
+        scope.append(option);
+      }
+      scope.value = selectedScope && selection().length ? "selected" : "all";
+      scopeLabel.append(scope);
+      const focusLabel = el("label", "", "Focus (optional)");
+      const input = el("textarea", "pc-plan-review-focus");
+      input.maxLength = 2000; input.value = reviewFocus;
+      input.placeholder = "For example: Challenge the migration order.";
+      input.addEventListener("input", () => { reviewFocus = input.value; save(); });
+      focusLabel.append(input);
+      body.append(scopeLabel, focusLabel, btn("Start review", "pc-start-plan-review", () => {
+        dialog.close();
+        submit("review", scope.value === "selected" ? selection() : draft.map(s => s.id), "independent");
+      }));
+      input.focus();
+    });
+    independent.disabled = !!base.plan_reviews?.some(r => r.state === "requested" || r.state === "running");
+    body.append(independent, el("p", "", independent.disabled ? "An independent review is already active." : "Ask a fresh agent to challenge the plan’s approach, completeness, and sequencing."));
+    root.append(dialog); dialog.showModal();
+  }
   function updateNextBatch() {
     const panel = q(".pc-next");
     panel.replaceChildren();
+    renderPlanReviews();
     panel.hidden = finished || !draft.some(s => s.status !== "completed");
     if (panel.hidden) return;
     const batch = suggestedBatch();
@@ -728,8 +804,7 @@ declare global {
       select.disabled = !!sending;
       actions.append(select);
     }
-    const review = btn("Review plan", "pc-review-plan", () =>
-      submit("review", draft.filter(s => s.status !== "completed").map(s => s.id)));
+    const review = btn("Review plan", "pc-review-plan", () => openPlanReview());
     review.title = "Assess scope, sequencing, dependencies, and acceptance criteria without implementing or reviewing completed code.";
     review.disabled = !!sending;
     actions.append(review);
@@ -737,6 +812,8 @@ declare global {
   }
   function updateActions() {
     updateNextBatch();
+    q<HTMLButtonElement>(".pc-review-selection").hidden = finished || !selection().length;
+    q<HTMLButtonElement>(".pc-review-selection").disabled = !!sending;
     const ids = selection(),
       ops = operations(),
       available = draft.filter((s) => s.status !== "completed").length;
@@ -1724,7 +1801,7 @@ declare global {
         ?.setAttribute("aria-expanded", "false");
     }
   });
-  async function submit(intent: Intent, targets: string[] = []) {
+  async function submit(intent: Intent, targets: string[] = [], reviewMode?: "independent") {
     const lifecycleAction = intent === "finish" || intent === "reopen";
     if (finished && intent !== "reopen") return;
     const ops = intent === "reopen" ? [] : operations(),
@@ -1754,7 +1831,7 @@ declare global {
           : intent === "implement"
           ? `Preview: ${runLabel(ids)}. Review steps open fresh Codex tasks; unselected steps stay for later. No request was sent.`
           : planning
-            ? `Preview: Codex would ${intent === "replan" ? "replan dependencies for" : intent === "decompose" ? "break down" : "review"} ${targets.length} ${targets.length === 1 ? "step" : "steps"} without starting implementation. No request was sent.`
+            ? reviewMode ? `Preview: a fresh task would independently review ${targets.length} plan steps. No request was sent.` : `Preview: Codex would ${intent === "replan" ? "replan dependencies for" : intent === "decompose" ? "break down" : "review"} ${targets.length} ${targets.length === 1 ? "step" : "steps"} without starting implementation. No request was sent.`
             : "Preview: edits are kept here. No request was sent.",
       );
       return;
@@ -1765,7 +1842,7 @@ declare global {
       );
       return;
     }
-    const key = planning ? intent + ":" + targets.join(",") : intent;
+    const key = planning ? intent + ":" + targets.join(",") + (reviewMode ? ":" + reviewMode + ":" + reviewFocus : "") : intent;
     requestIds[key] = requestIds[key] || uid();
     const request: ChangeRequest = {
       plan_id: base.plan_id,
@@ -1776,8 +1853,10 @@ declare global {
     };
     if (intent === "implement") request.selected_step_ids = ids;
     if (planning) request.target_step_ids = targets;
-    const instruction =
-      intent === "finish"
+    if (reviewMode) { request.review_mode = reviewMode; request.review_focus = reviewFocus; }
+    const instruction = reviewMode === "independent"
+      ? "Apply this request first, then follow references/plan-review.md to launch one independent plan review in a fresh Codex task. Review requirements, architecture, completeness, sequencing, and acceptance criteria for target_step_ids against relevant code. Reuse an existing task on retry. The reviewer must return findings only: no new Hyperion plan, canonical-plan edits, implementation, or recursive reviews. Reconcile findings into the existing plan, recording applied, not adopted with reasons, or needs your input. Preserve completed history and implementation authorization boundaries. Show the refreshed plan."
+      : intent === "finish"
         ? "Apply the included draft edits and finish this plan through the helper. Preserve every task's actual status and notes; unfinished tasks remain unfinished. Clear implementation approval. Confirm briefly in text and do not render another card. Keep this plan quiet on future follow-ups unless the user explicitly asks to show or reopen it."
         : intent === "reopen"
           ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection."
@@ -1823,7 +1902,7 @@ declare global {
               : intent === "decompose"
                 ? "Break down the selected steps"
                 : intent === "review"
-                  ? "Review the affected plan steps"
+                  ? reviewMode ? "Independent plan review" : "Review the affected plan steps"
                   : "Save edits to this task plan",
       });
       notify(
@@ -1838,6 +1917,7 @@ declare global {
       render();
     }
   }
+  q<HTMLButtonElement>(".pc-review-selection").addEventListener("click", () => openPlanReview(true));
   apply.addEventListener("click", () => submit("edit"));
   implement.addEventListener("click", () => submit("implement"));
   lifecycle.addEventListener("click", () => submit(finished ? "reopen" : "finish"));

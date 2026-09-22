@@ -185,6 +185,8 @@ Keep the normal task plan consistent with the companion where that capability is
 
 **Review plan** (`intent: "review"`) assesses scope, sequencing, dependencies, and acceptance criteria. **Review implemented code** runs selected `kind: "review"` steps through `intent: "implement"` and checks the actual changes against their criteria. Keep these actions distinct; a plan review never starts a code-review task or authorizes fixes.
 
+**Independent plan review:** `intent: "review"` with `review_mode: "independent"` requests one fresh review task. Apply the request first, then follow [Independent plan review](references/plan-review.md), including retry recovery, captured requirements and revision, reviewer restrictions, and reconciliation. `review_focus` is optional user guidance. This action never authorizes implementation or a second canonical plan. Without this mode, use the ordinary refresh flow below.
+
 For a plan review request, inspect the targeted steps and prerequisites against current code. Revise assumptions, descriptions, dependencies, or estimates where needed, preserving completed work and unrelated decisions. Then record the review outcome:
 
 ```bash

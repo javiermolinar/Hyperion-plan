@@ -83,3 +83,7 @@ Add `--dry-run` to `init`, `apply`, `revise`, `checkpoint`, `review`, `finish`, 
 Dry runs are useful for examining the effect of a change; they do not add a user approval requirement to already authorized work. To save, repeat the same command without `--dry-run` using the still-current revision. Use the revision returned by each successful write for the next edit. If a targeted edit fails as stale, inspect the current plan and reconcile by IDs. Do not blindly retry with a newer revision; check whether the intended change was already applied. Card requests retain their existing `apply` idempotency behavior.
 
 After meaningful saved changes to an active plan, render with `render --plan PLAN_MD --output NEW_CARD_HTML` and show that card following the skill lifecycle. Published cards bundle the renderer used at creation. A new skill installation fixes new cards; it does not update earlier cards automatically.
+
+## Independent plan review records
+
+`plan-review --plan PLAN_MD --base-revision N --input UPDATE_JSON` records progress and findings for an applied independent plan-review request. See [Independent plan review](plan-review.md) for the update format, fresh-task workflow, and reconciliation rules. It preserves implementation authority and rejects stale writes.

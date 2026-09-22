@@ -30,6 +30,10 @@ const note = {
   "text-file": "Read literal UTF-8 text from a file instead of --text.",
 };
 export const commandHelp: Record<string, CommandHelp> = {
+  "plan-review": {
+    summary: "Record an independent plan review's progress or reconciled findings.",
+    options: { ...revision, input: "JSON update: request_id, state, task_id, report_path, note, findings.", ...dryRun },
+  },
   init: {
     summary: "Create a plan from a Markdown or JSON draft.",
     options: { input: "Draft file (required).", ...dryRun },

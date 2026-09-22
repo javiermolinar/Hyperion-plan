@@ -42,6 +42,17 @@ export interface Execution {
   state: ExecutionState;
   selected_step_ids: string[];
 }
+export interface PlanReview {
+  request_id: string;
+  revision: number;
+  target_step_ids: string[];
+  focus: string;
+  state: "requested" | "running" | "completed" | "blocked";
+  task_id?: string;
+  report_path?: string;
+  note?: string;
+  findings: { step_ids: string[]; text: string; resolution: "applied" | "not_adopted" | "needs_input"; reason: string }[];
+}
 export interface Plan {
   schema_version: 1;
   plan_id: string;
@@ -52,6 +63,7 @@ export interface Plan {
   applied_requests?: Record<string, string>;
   execution?: Execution;
   lifecycle?: Lifecycle;
+  plan_reviews?: PlanReview[];
   [key: string]: unknown;
 }
 export type Operation =
@@ -88,6 +100,8 @@ export interface ChangeRequest {
   operations: Operation[];
   selected_step_ids?: string[];
   target_step_ids?: string[];
+  review_mode?: "refresh" | "independent";
+  review_focus?: string;
 }
 export interface CardConfig {
   plan: Plan;
@@ -191,6 +205,37 @@ export function validate(value: unknown): Plan {
   );
   string(plan.title, "plan title", 200);
   requireValue(plan.lifecycle === undefined || ["active", "finished"].includes(plan.lifecycle), "Invalid plan lifecycle");
+  if (plan.plan_reviews !== undefined) {
+    requireValue(Array.isArray(plan.plan_reviews), "Invalid plan reviews");
+    requireValue(plan.plan_reviews.filter(r => record(r) && ["requested", "running"].includes(r.state)).length <= 1, "An independent plan review is already active");
+    const reviewIds = new Set<string>();
+    for (const review of plan.plan_reviews) {
+      requireValue(record(review), "Invalid plan review");
+      identifier(review.request_id);
+      requireValue(!reviewIds.has(review.request_id), "Duplicate plan review");
+      reviewIds.add(review.request_id);
+      requireValue(Number.isSafeInteger(review.revision) && review.revision > 0 && review.revision <= plan.revision, "Invalid reviewed revision");
+      requireValue(Array.isArray(review.target_step_ids) && review.target_step_ids.length > 0 && review.target_step_ids.length <= 30, "Invalid review targets");
+      review.target_step_ids.forEach(identifier);
+      requireValue(new Set(review.target_step_ids).size === review.target_step_ids.length, "Duplicate review target");
+      requireValue(typeof review.focus === "string" && review.focus.length <= 2000, "Invalid review focus");
+      requireValue(["requested", "running", "completed", "blocked"].includes(review.state), "Invalid plan review state");
+      if (review.task_id !== undefined) identifier(review.task_id);
+      for (const key of ["report_path", "note"] as const)
+        if (review[key] !== undefined) string(review[key], key, 4000);
+      requireValue(Array.isArray(review.findings) && review.findings.length <= 100, "Invalid review findings");
+      for (const finding of review.findings) {
+        requireValue(record(finding), "Invalid review finding");
+        string(finding.text, "finding", 4000);
+        string(finding.reason, "resolution reason", 4000);
+        requireValue(["applied", "not_adopted", "needs_input"].includes(finding.resolution), "Invalid finding resolution");
+        requireValue(Array.isArray(finding.step_ids) && finding.step_ids.every(id => review.target_step_ids.includes(id)), "Finding outside review scope");
+      }
+      if (review.state === "running" || review.state === "completed") requireValue(!!review.task_id, "Review needs a task ID");
+      if (review.state === "completed") requireValue(!!review.report_path, "Completed review needs a report");
+      if (review.state === "blocked") requireValue(!!review.note, "Blocked review needs a reason");
+    }
+  }
   const steps = plan.steps;
   requireValue(
     Array.isArray(steps) && steps.length <= 30,

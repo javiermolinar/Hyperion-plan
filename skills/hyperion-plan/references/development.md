@@ -78,3 +78,5 @@ Markdown, sidecar, recovery copies, and exports remain separate atomic writes, n
 ## Distribution
 
 The plugin root contains `.codex-plugin/plugin.json` and this skill. Package it with `dist/` included and `node_modules/`, caches, task data, and temporary output excluded. See the plugin-root `README.md` for installation. Keep one maintained source tree; installed/cache copies are deployment copies, not independent implementations.
+
+Independent plan review coverage lives in `tests/plan-review.test.cjs` and `tests/browser/plan-review.cjs`: durable requests, retries, authority isolation, revision checks, outcome validation, canonical Markdown, dialog scope/focus, findings, and narrow layouts. The browser host is simulated; it does not launch reviewer tasks.

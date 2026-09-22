@@ -1664,6 +1664,7 @@ __export(index_exports, {
   stepFingerprint: () => stepFingerprint,
   string: () => string,
   summary: () => summary,
+  updatePlanReview: () => updatePlanReview,
   uuid5: () => uuid5,
   validate: () => validate,
   validateStepOrder: () => validateStepOrder,
@@ -1795,6 +1796,37 @@ function validate(value) {
   );
   string(plan.title, "plan title", 200);
   requireValue(plan.lifecycle === void 0 || ["active", "finished"].includes(plan.lifecycle), "Invalid plan lifecycle");
+  if (plan.plan_reviews !== void 0) {
+    requireValue(Array.isArray(plan.plan_reviews), "Invalid plan reviews");
+    requireValue(plan.plan_reviews.filter((r) => record(r) && ["requested", "running"].includes(r.state)).length <= 1, "An independent plan review is already active");
+    const reviewIds = /* @__PURE__ */ new Set();
+    for (const review of plan.plan_reviews) {
+      requireValue(record(review), "Invalid plan review");
+      identifier(review.request_id);
+      requireValue(!reviewIds.has(review.request_id), "Duplicate plan review");
+      reviewIds.add(review.request_id);
+      requireValue(Number.isSafeInteger(review.revision) && review.revision > 0 && review.revision <= plan.revision, "Invalid reviewed revision");
+      requireValue(Array.isArray(review.target_step_ids) && review.target_step_ids.length > 0 && review.target_step_ids.length <= 30, "Invalid review targets");
+      review.target_step_ids.forEach(identifier);
+      requireValue(new Set(review.target_step_ids).size === review.target_step_ids.length, "Duplicate review target");
+      requireValue(typeof review.focus === "string" && review.focus.length <= 2e3, "Invalid review focus");
+      requireValue(["requested", "running", "completed", "blocked"].includes(review.state), "Invalid plan review state");
+      if (review.task_id !== void 0) identifier(review.task_id);
+      for (const key of ["report_path", "note"])
+        if (review[key] !== void 0) string(review[key], key, 4e3);
+      requireValue(Array.isArray(review.findings) && review.findings.length <= 100, "Invalid review findings");
+      for (const finding of review.findings) {
+        requireValue(record(finding), "Invalid review finding");
+        string(finding.text, "finding", 4e3);
+        string(finding.reason, "resolution reason", 4e3);
+        requireValue(["applied", "not_adopted", "needs_input"].includes(finding.resolution), "Invalid finding resolution");
+        requireValue(Array.isArray(finding.step_ids) && finding.step_ids.every((id) => review.target_step_ids.includes(id)), "Finding outside review scope");
+      }
+      if (review.state === "running" || review.state === "completed") requireValue(!!review.task_id, "Review needs a task ID");
+      if (review.state === "completed") requireValue(!!review.report_path, "Completed review needs a report");
+      if (review.state === "blocked") requireValue(!!review.note, "Blocked review needs a reason");
+    }
+  }
   const steps = plan.steps;
   requireValue(
     Array.isArray(steps) && steps.length <= 30,
@@ -2293,6 +2325,9 @@ function applyRequest(plan, value) {
     intent
   ), "Invalid request intent");
   requireValue(Array.isArray(operations) && operations.length <= 100, "Expected at most 100 operations");
+  requireValue(request.review_mode === void 0 || intent === "review" && ["refresh", "independent"].includes(request.review_mode), "Invalid review mode");
+  requireValue(request.review_focus === void 0 || intent === "review" && request.review_mode === "independent" && typeof request.review_focus === "string" && request.review_focus.length <= 2e3, "Invalid review focus");
+  const independent = intent === "review" && request.review_mode === "independent";
   const selected = request.selected_step_ids === void 0 ? [] : request.selected_step_ids, targets = request.target_step_ids === void 0 ? [] : request.target_step_ids;
   requireValue(Array.isArray(selected), "Invalid implementation selection");
   requireValue(Array.isArray(targets), "Invalid planning targets");
@@ -2345,6 +2380,17 @@ function applyRequest(plan, value) {
       state: "approved",
       selected_step_ids: clone(selected)
     };
+  } else if (independent) {
+    requireValue(!result.plan_reviews?.some((r) => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
+    for (const sid of targets) requireValue(Object.hasOwn(available, sid), `Planning target is absent: ${sid}`);
+    result.plan_reviews = [...result.plan_reviews ?? [], {
+      request_id: rid,
+      revision: result.revision + 1,
+      target_step_ids: clone(targets),
+      focus: request.review_focus ?? "",
+      state: "requested",
+      findings: []
+    }];
   } else if (intent === "replan") {
     for (const sid of targets)
       requireValue(Object.hasOwn(
@@ -2385,6 +2431,7 @@ function revise(plan, replacement, revision) {
   preserveHistory(oldSteps, result.steps);
   result.revision = revision + 1;
   result.applied_requests = clone(plan.applied_requests ?? {});
+  if (plan.plan_reviews) result.plan_reviews = clone(plan.plan_reviews);
   delete result.execution;
   if (plan.execution != null) {
     result.execution = clone(plan.execution);
@@ -2541,12 +2588,30 @@ function summary(plan) {
     lifecycle: plan.lifecycle ?? "active",
     render_policy: plan.lifecycle === "finished" ? "on_request" : "on_change",
     execution,
+    ...plan.plan_reviews ? { plan_reviews: clone(plan.plan_reviews) } : {},
     steps: plan.steps.map(
       (step) => Object.fromEntries(
         fields2.filter((k) => k in step).map((k) => [k, step[k]])
       )
     )
   };
+}
+function updatePlanReview(plan, revision, value) {
+  validate(plan);
+  requireActive(plan);
+  requireValue(plan.revision === revision, `Stale plan: current revision ${plan.revision}`);
+  requireValue(record(value), "Invalid plan review update");
+  requireValue(Object.keys(value).every((k) => ["request_id", "state", "task_id", "report_path", "note", "findings"].includes(k)), "Unexpected plan review field");
+  const result = clone(plan);
+  const review = result.plan_reviews?.find((r) => r.request_id === value.request_id);
+  requireValue(review, "Unknown plan review request");
+  requireValue(value.state !== "requested", "Cannot restart a review request");
+  requireValue(review.state !== "completed" || value.state === void 0 || value.state === "completed", "Cannot restart a completed review");
+  requireValue(!review.task_id || value.task_id === void 0 || value.task_id === review.task_id, "Preserve the original reviewer task");
+  Object.assign(review, value);
+  if (equal(plan, result)) return [result, false];
+  result.revision++;
+  return [validate(result), true];
 }
 
 // src/storage.ts
@@ -3895,6 +3960,7 @@ function planChanges(before, after) {
   stepFingerprint,
   string,
   summary,
+  updatePlanReview,
   uuid5,
   validate,
   validateStepOrder,

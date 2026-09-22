@@ -31,6 +31,7 @@ const decode=call=>JSON.parse(call.prompt.split('Change request JSON:\n')[1]);
   await restored.ui.locator('.pc-next .pc-step-link').first().click();
   assert.equal(await restored.ui.locator('[data-step="s7"] .pc-details').isVisible(),true,'Suggestion link reveals a collapsed milestone');
   await restored.ui.locator('.pc-review-plan').click();
+  await restored.ui.locator('.pc-refresh-plan').click();
   const call=(await restored.frame.evaluate(()=>window.__calls)).at(-1), request=decode(call);
   assert.equal(request.intent,'review');assert.equal(request.selected_step_ids,undefined);assert.equal(request.target_step_ids.length,20);
   assert.match(call.prompt,/scope, sequencing, dependencies, and acceptance criteria/);
