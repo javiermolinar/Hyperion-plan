@@ -42,7 +42,7 @@ try{
   await completed.getByRole('button',{name:'Replan dependencies',exact:true}).click();
   let request=decode(await s.frame.evaluate(()=>window.__calls.at(-1))),result=apply(request);
   assert.equal(request.intent,'replan');assert.equal(result.steps[1].status,'completed');assert.equal(result.steps[2].review_state,'needs_review');assert.equal(result.execution,undefined);
-  await review.locator('.pc-check input').check();assert.equal(await s.ui.locator('.pc-implement').textContent(),'Run review');await s.ui.locator('.pc-implement').click();
+  await review.locator('.pc-check input').check();assert.equal(await s.ui.locator('.pc-implement').textContent(),'Review implemented code');await s.ui.locator('.pc-implement').click();
   const call=await s.frame.evaluate(()=>window.__calls.at(-1));assert.match(call.prompt,/covered step descriptions/);assert.match(call.prompt,/run_after as timing/);assert.deepEqual(decode(call).selected_step_ids,['review-selection']);
   await review.locator('.pc-check input').uncheck();await review.locator('.pc-settings > summary').click();
   assert.match(await review.locator('.pc-inherited').textContent(),/Only|Run only/);assert.match(await review.locator('.pc-inherited').textContent(),/Keyboard users/);
@@ -63,7 +63,7 @@ try{
   assert.equal(await restored.ui.locator('.pc-row').last().getAttribute('data-step'),'review-selection');assert.equal(await restored.ui.locator('.pc-settings').evaluate(e=>e.open),true);
   assert.equal(await restored.ui.getByRole('textbox',{name:'Note for: Review selection and progress',exact:true}).inputValue(),'Preserve the reviewer context in the PR description.');
   await s.ui.getByRole('button',{name:'Add step',exact:true}).click();await s.ui.getByRole('combobox',{name:'Step type',exact:true}).selectOption('review');
-  await s.ui.getByRole('combobox',{name:'Place new review after',exact:true}).selectOption('selection');await s.ui.getByRole('button',{name:'Add review',exact:true}).click();
+  await s.ui.getByRole('combobox',{name:'Place new review after',exact:true}).selectOption('selection');await s.ui.getByRole('button',{name:'Add code review',exact:true}).click();
   const added=s.ui.locator('.pc-row').nth(1),id=await added.getAttribute('data-step');assert.notEqual(id,'review-selection');assert.equal(await added.locator('.pc-check input').isChecked(),false);
   await s.ui.locator('.pc-apply').click();result=apply(decode(await s.frame.evaluate(()=>window.__calls.at(-1))));assert.equal(result.steps[1].kind,'review');assert.equal(result.steps[1].run_after,'selection');assert.deepEqual(result.steps[1].depends_on,['selection']);
   await added.locator('.pc-more').click();assert.match(await added.locator('.pc-menu').textContent(),/does not revert code/);await added.getByRole('button',{name:'Remove planned step',exact:true}).click();await s.ui.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await s.ui.locator('.pc-row').nth(1).getAttribute('data-step'),id);

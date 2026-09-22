@@ -22,6 +22,14 @@
 #__PLAN_ROOT__ .pc-selection-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:6px; }
 #__PLAN_ROOT__ .pc-selection-summary { font-size:12px; color:var(--pc-muted); }
 #__PLAN_ROOT__ .pc-quiet { background:transparent; border:0; color:var(--pc-muted); padding:5px 6px; font-size:12px; }
+#__PLAN_ROOT__ .pc-next { margin:0 20px 16px; padding:14px; border:1px solid var(--pc-line); border-radius:9px; background:var(--pc-soft); }
+#__PLAN_ROOT__ .pc-next p { margin:5px 0 10px; font-size:12px; color:var(--pc-muted); }
+#__PLAN_ROOT__ .pc-next ul { padding-left:20px; margin:8px 0; }
+#__PLAN_ROOT__ .pc-next-actions { display:flex; flex-wrap:wrap; gap:8px; }
+#__PLAN_ROOT__ .pc-milestone { list-style:none; border-top:1px solid var(--pc-line); }
+#__PLAN_ROOT__ .pc-milestone > details > summary { cursor:pointer; padding:12px 10px; font-weight:500; }
+#__PLAN_ROOT__ .pc-milestone-progress { display:block; margin-left:16px; font-size:12px; color:var(--pc-muted); font-weight:400; }
+#__PLAN_ROOT__ .pc-milestone-steps { list-style:none; margin:0; padding:0; }
 #__PLAN_ROOT__ .pc-steps { list-style:none; margin:0; padding:0 10px; }
 #__PLAN_ROOT__ .pc-row { padding:5px 0; border-top:1px solid var(--pc-line); }
 #__PLAN_ROOT__ .pc-row:first-child { border:0; }
@@ -118,13 +126,14 @@
     <p class="pc-interaction-hint"></p>
     <div class="pc-selection-bar"><span class="pc-selection-summary" aria-live="polite">Choose steps to implement</span><button type="button" class="pc-quiet pc-select-all cursor-interaction">Select all</button></div>
   </header>
+  <div class="pc-next" aria-label="Next useful batch"></div>
   <ol id="__PLAN_ROOT__-list" class="pc-steps" aria-label="Plan steps"></ol>
   <div class="pc-add-area">
     <div class="pc-undo-line" hidden><span class="pc-undo-label"></span><button type="button" class="pc-quiet pc-undo cursor-interaction">Undo</button></div>
     <button type="button" class="pc-quiet pc-add-toggle cursor-interaction" aria-expanded="false" aria-controls="__PLAN_ROOT__-composer"><i data-lucide="plus" aria-hidden="true"></i>Add step</button>
     <div id="__PLAN_ROOT__-composer" class="pc-composer" hidden>
-      <label>Type <select class="pc-add-type" aria-label="Step type"><option value="implementation">Implementation</option><option value="review">Review</option></select></label>
-      <div class="pc-review-insert" id="__PLAN_ROOT__-review-add" hidden><label>Run after <select class="pc-review-after" aria-label="Place new review after"></select></label><button type="button" class="pc-insert-review cursor-interaction">Add review</button><span class="pc-label">Initially inspects this step; coverage can be changed in review settings.</span></div>
+      <label>Type <select class="pc-add-type" aria-label="Step type"><option value="implementation">Implementation</option><option value="review">Review implemented code</option></select></label>
+      <div class="pc-review-insert" id="__PLAN_ROOT__-review-add" hidden><label>Run after <select class="pc-review-after" aria-label="Place new review after"></select></label><button type="button" class="pc-insert-review cursor-interaction">Add code review</button><span class="pc-label">Initially inspects this step; coverage can be changed in review settings.</span></div>
       <div id="__PLAN_ROOT__-add" class="pc-add" role="group" aria-label="Add a step">
       <label for="__PLAN_ROOT__-new-title">Step title</label><div class="pc-add-line"><input id="__PLAN_ROOT__-new-title" type="text" maxlength="200" placeholder="What else should the plan include?" required><button type="button" class="pc-add-button cursor-interaction">Add</button></div>
       <details><summary class="cursor-interaction">Details (optional)</summary><textarea class="pc-new-description" aria-label="New step description" maxlength="1000" placeholder="What should this step do?"></textarea></details>

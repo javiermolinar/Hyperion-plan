@@ -1808,6 +1808,7 @@ function validate(value) {
     ids.add(sid);
     string(step.title, "step title", 200);
     string(defaultValue(step.short_title, ""), "short title", 80, true);
+    if (step.milestone !== void 0) string(step.milestone, "milestone", 100, true);
     string(defaultValue(step.description, ""), "description", 4e3, true);
     string(defaultValue(step.done_when, ""), "done_when", 2e3, true);
     requireValue(
@@ -2109,6 +2110,7 @@ function applyOperations(plan, operations) {
       };
       for (const field of [
         "kind",
+        "milestone",
         "depends_on",
         "checks",
         "run_after"
@@ -2245,7 +2247,8 @@ function stepFingerprint(step) {
         "progress_note",
         "blocked_by",
         "review_state",
-        "review_note"
+        "review_note",
+        "milestone"
       ].includes(k)
     )
   );
@@ -2513,6 +2516,7 @@ function summary(plan) {
     "id",
     "title",
     "short_title",
+    "milestone",
     "kind",
     "checks",
     "run_after",
@@ -3643,6 +3647,7 @@ async function migrate(source, output) {
 var editableFields = /* @__PURE__ */ new Set([
   "title",
   "short_title",
+  "milestone",
   "description",
   "done_when",
   "depends_on",

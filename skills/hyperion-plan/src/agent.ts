@@ -36,6 +36,7 @@ export interface NoteEdit {
 const editableFields = new Set([
   "title",
   "short_title",
+  "milestone",
   "description",
   "done_when",
   "depends_on",

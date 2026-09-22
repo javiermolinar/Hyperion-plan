@@ -50,6 +50,7 @@ export function stepFingerprint(step: Step): { status: Status; scope: string } {
           "blocked_by",
           "review_state",
           "review_note",
+          "milestone",
         ].includes(k),
     ),
   );
@@ -390,6 +391,7 @@ export function summary(plan: Plan) {
     "id",
     "title",
     "short_title",
+    "milestone",
     "kind",
     "checks",
     "run_after",

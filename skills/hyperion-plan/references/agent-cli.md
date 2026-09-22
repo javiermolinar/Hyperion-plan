@@ -45,7 +45,7 @@ node SKILL_DIR/dist/plan.cjs step remove --plan PLAN_MD --base-revision REV --st
 
 `add` and `update` accept `--title`, `--description`, and `--done-when`. Structured `--input` accepts a JSON object of these fields:
 
-- `title`, `short_title`, `description`, `done_when`
+- `title`, `short_title`, `milestone`, `description`, `done_when`
 - `depends_on` (array of stable IDs)
 - `complexity`, `complexity_reason`, `estimated_files`, `estimate_note`, `scope_warning`
 - `checks`, `run_after` for review steps; active/completed reviews retain their scope and timing

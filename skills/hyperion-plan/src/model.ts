@@ -19,6 +19,7 @@ export interface Step {
   done_when?: string;
   comments?: Note[];
   short_title?: string;
+  milestone?: string;
   kind?: "implementation" | "review";
   checks?: string[];
   depends_on?: string[];
@@ -61,6 +62,7 @@ export type Operation =
       description?: string;
       done_when?: string;
       kind?: Step["kind"];
+      milestone?: string;
       depends_on?: string[];
       checks?: string[];
       run_after?: string;
@@ -203,6 +205,7 @@ export function validate(value: unknown): Plan {
     ids.add(sid);
     string(step.title, "step title", 200);
     string(defaultValue(step.short_title, ""), "short title", 80, true);
+    if (step.milestone !== undefined) string(step.milestone, "milestone", 100, true);
     string(defaultValue(step.description, ""), "description", 4000, true);
     string(defaultValue(step.done_when, ""), "done_when", 2000, true);
     requireValue(
@@ -542,6 +545,7 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
       };
       for (const field of [
         "kind",
+        "milestone",
         "depends_on",
         "checks",
         "run_after",

@@ -31,6 +31,8 @@ Use a `# Title`, optional introductory prose, and top-level `- [ ]` / `- [x]` ta
   - Breakpoint operations still target the same IDs.
 ```
 
+Optional `"milestone":"Service foundation"` step metadata groups adjacent steps under a collapsible heading. Names may contain up to 100 characters; omit or clear the field for ungrouped steps. Repeated names separated by other milestones form separate sections so grouping never changes execution order. Existing plans without milestone names retain their flat layout. Changing only milestone names preserves implementation approval and freshness.
+
 Metadata preserves IDs, review type, coverage, timing, complexity estimates, and freshness state. An unchecked item with `"in_progress":true` in its step comment is running. Completion still comes from the Markdown checkbox. This is a portable task-list subset, not an arbitrary-Markdown parser or a guarantee that every planning tool understands review semantics. Tools that discard metadata may lose identity or references; malformed or dangling references are rejected rather than silently reconstructed.
 
 Supported text sections are **Description**, **Done when**, **Result**, **Blocked by**, **Freshness**, **Complexity rationale**, **Estimate note**, and **Scope warning**. **Checks** contains bullets. **Notes** contains identified note blockquotes, optionally followed by **Response** and a response blockquote. Plain indented text without sections imports as the description. Introductory prose is retained. Unsupported unindented text inside a task or duplicate sections cause a clear error and leave the source untouched.

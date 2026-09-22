@@ -34,6 +34,7 @@ interface SavedDraft {
   };
   privateContent?: {
     expanded?: string[];
+    milestones?: Record<string, boolean>;
     settings?: string[];
     request_ids?: Record<string, string | null>;
     note_editors?: { step_id: string; id: string }[];
@@ -89,6 +90,7 @@ declare global {
     selected = new Set<string>(),
     expanded = new Set<string>(),
     settings = new Set<string>(),
+    milestones: Record<string, boolean> = Object.create(null),
     removed: Removed[] = [],
     notes = new Map<string, { id: string; text: string }>(),
     menu: string | null = null,
@@ -168,7 +170,7 @@ declare global {
       reviews = ids.filter((id) => isReview(byId(id))).length;
     return count
       ? reviews === count
-        ? `Run ${count === 1 ? "review" : count + " reviews"}`
+        ? count === 1 ? "Review implemented code" : `Run ${count} code reviews`
         : reviews
           ? `Run ${count} steps`
           : `Implement ${count} ${count === 1 ? "step" : "steps"}`
@@ -178,6 +180,7 @@ declare global {
   }
   function openStep(id: string) {
     expanded.add(id);
+    revealMilestone(id);
     save();
     render();
     const target = document.getElementById(root.id + "-expand-" + id);
@@ -209,8 +212,8 @@ declare global {
       const targets = relatedReviewTargets(step),
         label =
           targets.length <= 2
-            ? "Review " + targets.map((id) => "#" + stepNumber(id)).join(" & ")
-            : `Review ${targets.length} affected steps`;
+            ? "Review plan: " + targets.map((id) => "#" + stepNumber(id)).join(" & ")
+            : `Review plan: ${targets.length} affected steps`;
       const review = btn(label, "pc-row-action pc-review-action", () =>
         submit("review", targets),
       );
@@ -252,8 +255,10 @@ declare global {
     memo = new Map<string, string>(),
   ): string {
     if (memo.has(step.id)) return memo.get(step.id)!;
-    if (step.review_state === "needs_review")
-      return step.review_note || "Review this step against the current code.";
+    if (step.review_state === "needs_review") {
+      const reason = step.review_note?.trim() || "Plan assumptions need review.";
+      return reason.length > 160 ? reason.slice(0, 157) + "…" : reason;
+    }
     if (visited.has(step.id)) return "Prerequisite cycle needs review.";
     const next = new Set(visited);
     next.add(step.id);
@@ -276,7 +281,7 @@ declare global {
     return "";
   }
   function blockReason(step: Step, candidates = selected) {
-    if (reviewReason(step)) return "Needs review";
+    if (reviewReason(step)) return "Needs plan review";
     if (step.blocked_by) return "Blocked: " + step.blocked_by;
     const missing = executionDeps(step).filter(
       (id) => byId(id)?.status !== "completed" && !candidates.has(id),
@@ -329,6 +334,7 @@ declare global {
           description: step.description || "",
           done_when: step.done_when || "",
         };
+        if (step.milestone !== undefined) op.milestone = step.milestone;
         if (isReview(step))
           Object.assign(op, {
             kind: "review",
@@ -431,6 +437,7 @@ declare global {
       privateContent: {
         expanded: [...expanded],
         settings: [...settings],
+        milestones,
         request_ids: requestIds,
         note_editors: [...notes]
           .filter(([id]) => draft.some((s) => s.id === id))
@@ -449,6 +456,7 @@ declare global {
       selected: [...selected].sort(),
       expanded: [...expanded].sort(),
       settings: [...settings].sort(),
+      milestones,
       notes: [...notes].sort(([a], [b]) => a.localeCompare(b)),
     });
   }
@@ -463,6 +471,9 @@ declare global {
       return false;
     try {
       const previousView = restoredView();
+      const savedMilestones = saved.privateContent?.milestones;
+      if (savedMilestones && typeof savedMilestones === "object")
+        milestones = Object.assign(Object.create(null), Object.fromEntries(Object.entries(savedMilestones).filter(([, value]) => typeof value === "boolean")));
       if (finished) {
         // Restore inspection and retry state only; closed plans never replay edits.
         expanded = new Set((saved.privateContent?.expanded || []).filter(id => base.steps.some(step => step.id === id)));
@@ -564,6 +575,7 @@ declare global {
     if (
       mutate(() => {
         draft = steps;
+        revealMilestone(id);
         menu = null;
       })
     ) {
@@ -651,7 +663,80 @@ declare global {
     );
     notify(dropTarget.error);
   }
+  // Group contiguous runs only: display grouping must never reorder execution.
+  function milestoneGroups() {
+    const groups: { key: string; label: string; steps: UiStep[] }[] = [];
+    for (const step of draft) {
+      const label = step.milestone?.trim() || "Other steps";
+      const previous = groups.at(-1);
+      if (previous?.label === label) previous.steps.push(step);
+      else groups.push({ key: step.id, label, steps: [step] });
+    }
+    return groups;
+  }
+  function revealMilestone(id: string) {
+    const group = milestoneGroups().find(g => g.steps.some(s => s.id === id));
+    if (group) milestones[group.key] = true;
+  }
+  function milestoneProgress(steps: UiStep[]) {
+    const done = steps.filter(s => s.status === "completed").length;
+    const blocked = steps.filter(s => s.status !== "completed" && (s.blocked_by || reviewReason(s))).length;
+    const count = steps.filter(s => selected.has(s.id)).length;
+    return `${done}/${steps.length} complete${blocked ? ` · ${blocked} blocked or need plan review` : ""}${count ? ` · ${count} selected` : ""}`;
+  }
+  function suggestedBatch() {
+    const ready = draft.filter(s => s.status !== "completed" && !blockReason(s, new Set()));
+    const first = ready.find(s => s.status === "in_progress") || ready[0];
+    if (!first) return [];
+    if (isReview(first) || broad(first) || first.status === "in_progress") return [first];
+    const group = milestoneGroups().find(g => g.steps.includes(first))!;
+    const remaining = group.steps.slice(group.steps.indexOf(first));
+    const reviewIndex = remaining.findIndex(isReview);
+    return remaining.slice(0, reviewIndex < 0 ? undefined : reviewIndex)
+      .filter(s => ready.includes(s) && !broad(s)).slice(0, 3);
+  }
+  function updateNextBatch() {
+    const panel = q(".pc-next");
+    panel.replaceChildren();
+    panel.hidden = finished || !draft.some(s => s.status !== "completed");
+    if (panel.hidden) return;
+    const batch = suggestedBatch();
+    panel.append(el("strong", "", batch.length && isReview(batch[0]) ? "Next: review implemented code" : "Next implementation batch"));
+    const items = el("ul");
+    for (const step of batch) {
+      const item = el("li");
+      item.append(btn(shortLabel(step), "pc-step-link", () => openStep(step.id)));
+      if (step.done_when) item.append(el("p", "", step.done_when));
+      items.append(item);
+    }
+    if (batch.length) panel.append(items);
+    panel.append(el("p", "", batch.length
+      ? isReview(batch[0]) ? "The covered work is complete. This reviews the code against its acceptance criteria; fixes require their own selection."
+        : `${batch[0].milestone ? batch[0].milestone + " · " : ""}Prerequisites are complete. ${batch.length > 1 ? "These steps can start independently. " : ""}Select this suggestion, then adjust the selection or run it below.`
+      : "No work is ready to start. Review flagged plan assumptions or resolve the blockers shown below."));
+    const actions = el("div", "pc-next-actions");
+    if (batch.length) {
+      const select = btn("Select suggested batch", "pc-select-batch", () => {
+        selected = new Set(batch.map(s => s.id));
+        for (const group of milestoneGroups())
+          if (group.steps.some(s => selected.has(s.id))) milestones[group.key] = true;
+        requestIds.implement = null;
+        save();
+        render();
+        q<HTMLButtonElement>(".pc-select-batch").focus();
+      });
+      select.disabled = !!sending;
+      actions.append(select);
+    }
+    const review = btn("Review plan", "pc-review-plan", () =>
+      submit("review", draft.filter(s => s.status !== "completed").map(s => s.id)));
+    review.title = "Assess scope, sequencing, dependencies, and acceptance criteria without implementing or reviewing completed code.";
+    review.disabled = !!sending;
+    actions.append(review);
+    panel.append(actions);
+  }
   function updateActions() {
+    updateNextBatch();
     const ids = selection(),
       ops = operations(),
       available = draft.filter((s) => s.status !== "completed").length;
@@ -749,6 +834,10 @@ declare global {
   // native details, editor focus, composition and text selection stay intact.
   function updateAvailability() {
     updateParallelSummary();
+    const groups = milestoneGroups();
+    list.querySelectorAll<HTMLElement>(".pc-milestone-progress").forEach((progress, index) => {
+      progress.textContent = milestoneProgress(groups[index].steps);
+    });
     for (const row of list.querySelectorAll<HTMLElement>("[data-step]")) {
       const step = byId(row.dataset.step!)!;
       const reason = step.status !== "completed" && blockReason(step);
@@ -763,14 +852,14 @@ declare global {
       const copy = q(".pc-copy", row);
       copy.querySelector(".pc-condition")?.remove();
       if (reason) {
-        const condition = el("span", "pc-condition", reason === "Needs review" ? reviewReason(step) : reason);
+        const condition = el("span", "pc-condition", reason === "Needs plan review" ? reviewReason(step) : reason);
         condition.id = root.id + "-condition-" + step.id;
         copy.append(condition);
       }
       const meta = q(".pc-step-meta", row);
       meta.querySelector(".pc-review-label")?.remove();
       if (step.status !== "completed" && reviewReason(step))
-        meta.append(el("span", "pc-review-label", "Needs review"));
+        meta.append(el("span", "pc-review-label", "Needs plan review"));
       const context = q(".pc-row-context", row);
       context.querySelectorAll(".pc-row-action").forEach(action => action.remove());
       planningActions(context, step);
@@ -815,6 +904,30 @@ declare global {
       list.append(
         el("li", "pc-empty", "No steps yet. Add one below or undo a removal."),
       );
+    const grouped = draft.some(s => s.milestone?.trim());
+    const groups = milestoneGroups();
+    const active = groups.find(g => g.steps.some(s => s.status === "in_progress"))
+      || groups.find(g => g.steps.some(s => s.status !== "completed" && !blockReason(s, new Set())))
+      || groups.find(g => g.steps.some(s => s.status !== "completed"));
+    const destinations = new Map<string, HTMLElement>();
+    if (grouped) for (const group of groups) {
+      const wrapper = el("li", "pc-milestone"), section = el("details");
+      section.open = milestones[group.key] ?? group === active;
+      const summary = el("summary", "cursor-interaction", group.label);
+      const progress = el("span", "pc-milestone-progress");
+      progress.textContent = milestoneProgress(group.steps);
+      summary.append(progress);
+      const children = el("ol", "pc-milestone-steps");
+      section.append(summary, children);
+      section.addEventListener("toggle", () => {
+        if (!section.isConnected || section.open === (milestones[group.key] ?? group === active)) return;
+        milestones[group.key] = section.open;
+        save();
+      });
+      wrapper.append(section);
+      list.append(wrapper);
+      for (const step of group.steps) destinations.set(step.id, children);
+    }
     for (const step of draft) {
       const original = base.steps.find((s) => s.id === step.id),
         isOpen = expanded.has(step.id),
@@ -930,12 +1043,12 @@ declare global {
         const type = el("span", "pc-review-type");
         type.append(
           icon("shield-check"),
-          el("span", "", "Review · fresh task"),
+          el("span", "", "Code review · fresh task"),
         );
         meta.append(type);
       } else meta.append(el("span", "pc-complexity", complexityLabel(step)));
       if (!isDone && reviewReason(step))
-        meta.append(el("span", "pc-review-label", "Needs review"));
+        meta.append(el("span", "pc-review-label", "Needs plan review"));
       if (isDone)
         meta.append(
           el(
@@ -963,7 +1076,7 @@ declare global {
         const condition = el(
           "span",
           "pc-condition",
-          reason === "Needs review" ? reviewReason(step) : reason,
+          reason === "Needs plan review" ? reviewReason(step) : reason,
         );
         condition.id = root.id + "-condition-" + step.id;
         copy.append(condition);
@@ -1021,7 +1134,7 @@ declare global {
           }
         }
         if (!isReview(step)) {
-          const insert = btn("Add review after this", "", () =>
+          const insert = btn("Add code review after this", "", () =>
             insertReview(step.id),
           );
           insert.prepend(icon("shield-check"));
@@ -1307,6 +1420,8 @@ declare global {
           );
         if (step.estimate_note)
           details.append(el("p", "pc-condition", step.estimate_note));
+        if (step.review_note)
+          details.append(el("p", "pc-description", "Plan review evidence: " + step.review_note));
         if (step.progress_note)
           details.append(
             el("p", "pc-description", "Latest result: " + step.progress_note),
@@ -1428,7 +1543,7 @@ declare global {
         extra.append(editor);
       }
       row.append(details);
-      list.append(row);
+      (destinations.get(step.id) || list).append(row);
     }
     if (finished) {
       for (const control of root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("button,input,textarea,select"))
@@ -1504,6 +1619,7 @@ declare global {
       id: uid(),
       kind: "review",
       title: "Review changes in a fresh Codex task",
+      ...(byId(after)?.milestone ? { milestone: byId(after)!.milestone } : {}),
       description:
         "A fresh Codex task checks the chosen work against its requirements and reports findings here.",
       done_when:
@@ -1516,9 +1632,10 @@ declare global {
     };
     menu = null;
     if (
-      mutate(() =>
-        draft.splice(draft.findIndex((s) => s.id === after) + 1, 0, step),
-      )
+      mutate(() => {
+        draft.splice(draft.findIndex((s) => s.id === after) + 1, 0, step);
+        revealMilestone(step.id);
+      })
     ) {
       expanded.add(step.id);
       q(".pc-composer").hidden = true;
@@ -1555,7 +1672,10 @@ declare global {
       status: "pending",
       comments: [],
     };
-    if (mutate(() => draft.push(step))) {
+    if (mutate(() => {
+      draft.push(step);
+      revealMilestone(step.id);
+    })) {
       title.value = "";
       description.value = "";
       q(".pc-composer").hidden = true;
@@ -1666,7 +1786,7 @@ declare global {
         : intent === "decompose"
           ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation."
           : intent === "review"
-            ? "Apply the included edits, then inspect current code and review the target_step_ids and their prerequisites. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation."
+            ? "Apply the included edits, then review the plan for target_step_ids and their prerequisites: assess scope, sequencing, dependencies, and acceptance criteria against current code. This is a plan review, not an implemented-code review. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation."
             : "Revise the plan and acknowledge notes; this request does not start implementation. Refresh the interactive card afterward.";
     const reviewInstruction =
       intent === "implement"
