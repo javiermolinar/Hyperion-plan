@@ -11,7 +11,7 @@ Hyperion Plan gives you control over how Codex tackles substantial engineering w
 Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.3.1/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.3.2/skills/hyperion-plan
 ```
 
 Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$hyperion-plan`.
