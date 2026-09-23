@@ -30,6 +30,14 @@ const note = {
   "text-file": "Read literal UTF-8 text from a file instead of --text.",
 };
 export const commandHelp: Record<string, CommandHelp> = {
+  handover: {
+    summary: "Prepare, block, cancel, or transfer a requested context handover. Preserves approval and step progress.",
+    options: { ...revision, input: "JSON: request_id, state, brief_path, summary, next_action, code_state, destination_task_id or note.", ...dryRun },
+  },
+  "handover-brief": {
+    summary: "Export a prepared handover for a fresh task; no new execution authority.",
+    options: { "request-id": "Handover request ID (required).", output: "Destination Markdown path (required)." },
+  },
   "plan-review": {
     summary: "Record an independent plan review's progress or reconciled findings.",
     options: { ...revision, input: "JSON update: request_id, state, task_id, report_path, note, findings.", ...dryRun },
@@ -194,3 +202,5 @@ export function help(command?: string): string {
     "Use COMMAND --help for its options. Plan edits do not authorize implementation; apply records explicit implementation requests.",
   ].join("\n");
 }
+
+for (const command of Object.values(commandHelp)) command.options["task-id"] = "Acting task ID; required for writes after handover ownership is recorded (defaults to CODEX_THREAD_ID when available).";

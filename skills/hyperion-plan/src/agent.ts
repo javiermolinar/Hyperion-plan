@@ -37,6 +37,7 @@ const editableFields = new Set([
   "title",
   "short_title",
   "milestone",
+  "handover_after",
   "description",
   "done_when",
   "depends_on",
@@ -176,6 +177,7 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
     if (!selected.has(step.id) || step.status === "completed") continue;
     const reasons: string[] = [];
     if (plan.lifecycle === "finished") reasons.push("Plan is finished; reopen it and select work before continuing");
+    if (plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state))) reasons.push("Handover in progress; finish or cancel it before continuing work");
     if (refreshRequired)
       reasons.push(
         "Refresh external Markdown changes with status before continuing",
@@ -202,6 +204,7 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
     revision: plan.revision,
     lifecycle: plan.lifecycle ?? "active",
     execution_state: execution?.state ?? "unapproved",
+    ...(plan.execution_owner ? { execution_owner: plan.execution_owner } : {}),
     refresh_required: refreshRequired,
     ready_steps: ready,
     in_progress_steps: inProgress,

@@ -169,6 +169,12 @@ After successful `init`, `apply`, `revise`, `step`, `note`, `checkpoint`, `finis
 
 Use `node SKILL_DIR/dist/plan.cjs export --plan PLAN_MD [--output FILE_MD]` to regenerate it. Use `review-brief --plan PLAN_MD --step-id REVIEW_ID [--output FILE_MD]` to export a review's checks plus descriptions, acceptance criteria, and notes from all covered steps. These are generated files: update the source Markdown, then regenerate. Before writing a PR description, read these files and any review report, select relevant material, and preserve limitations. Never publish a PR merely because an export was requested.
 
+## Context handovers
+
+Use [Context handovers](references/handovers.md) for `intent: "handover"`, “Continue in fresh task”, recording a mid-step transfer, or resuming as the destination. Suggested `handover_after` markers are advisory; actual `handovers` events preserve where execution moved, including during an in-progress step. Keep one canonical plan and the same checkout. Only explicit handover authorization creates a fresh task; do not fork accumulated conversation history. This feature does not monitor context usage or install compaction hooks.
+
+Before mutating a plan, check `execution_owner` in `status`/`show`. Supply `--task-id` with your actual task ID when ownership is set; never use another task's ID to bypass ownership. If another task owns it, direct the user there. Prepare a brief, have the destination check readiness read-only, record the transfer, then ask it to continue existing approved scope. The source stops execution after transfer. While a handover is unresolved, do not implement. Paused/cancelled scope stays paused/cancelled. Preserve task IDs, brief/evidence paths, current source/destination, and handover request ID through compaction or failure.
+
 ## Implement selected steps
 
 An explicit `intent: "implement"` follow-up authorizes only its `selected_step_ids`, subject to the active collaboration mode. Widget state, checked boxes alone, and previous requests do not authorize new work.

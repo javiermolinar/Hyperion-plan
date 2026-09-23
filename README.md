@@ -11,7 +11,7 @@ Hyperion Plan gives you control over how Codex tackles substantial engineering w
 Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.1.0/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.2.0/skills/hyperion-plan
 ```
 
 Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$hyperion-plan`.
@@ -35,6 +35,7 @@ Upgrading from v1.0.0? Remove the old `plan-companion` skill after installing `h
 - **Distinguish planning from code review.** **Review plan** offers a same-context refresh or an **Independent review** in a fresh task, with whole-plan or selected-step scope and optional focus. Review status and reconciled findings stay attached to the canonical plan without starting implementation. **Review implemented code** runs selected independent code reviews. Supporting evidence stays in step details.
 - **Make review part of the plan.** Add independent review steps with explicit checks. Choose when a review runs and which work it inspects, then select it when you want it carried out.
 - **Keep the plan honest.** Track progress, blockers, and completion evidence. Changes to approved requirements revoke the affected approval; changed prerequisites flag unfinished dependent work for another look.
+- **Continue in fresh context.** Mark useful handover points between batches, or hand over midway through a step. A fresh task receives the same canonical plan and working checkout; durable events record progress, next action, and execution ownership. Handover is manual, with no compaction prediction or context monitor.
 - **Bring the context into code review.** Generate review briefs and PR notes from the plan's intent, acceptance criteria, discussions, and recorded results.
 
 Finish a plan when you are done using it. **Finish plan** stops automatic cards and keeps the full history, including unfinished tasks. Ask Codex to reopen it whenever you want to continue.

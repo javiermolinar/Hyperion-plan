@@ -127,6 +127,7 @@ export function prNotes(plan: Plan): string {
         "",
       );
     lines.push(...contextLines(step));
+    if (step.handover_after) lines.push("**Suggested handover point after this step**", "", quoteText(step.handover_after), "");
     if (step.depends_on?.length)
       lines.push(
         `**${kind === "review" ? "Inspects" : "Prerequisites"}:** ` +
@@ -152,6 +153,12 @@ export function prNotes(plan: Plan): string {
     ] as const)
       if (step[field])
         lines.push(`**${label}**`, "", quoteText(step[field]), "");
+  }
+  for (const h of plan.handovers ?? []) {
+    lines.push(`## Context handover — ${h.state}`, "", `Request: ${h.request_id}; plan revision ${h.revision}; ${h.created_at}.`, "",
+      quoteText(`${h.position}${h.step_title ? ` ${h.step_title} (${h.step_id})` : " steps"}: ${h.reason}`), "");
+    for (const [label, value] of [["Source task", h.source_task_id], ["Destination task", h.destination_task_id], ["Work so far", h.summary], ["Next action", h.next_action], ["Code state", h.code_state], ["Brief", h.brief_path], ["Outcome", h.note]])
+      if (value) lines.push(`**${label}**`, "", quoteText(value), "");
   }
   return lines.join("\n");
 }

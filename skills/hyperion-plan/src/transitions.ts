@@ -52,6 +52,7 @@ export function stepFingerprint(step: Step): { status: Status; scope: string } {
           "review_state",
           "review_note",
           "milestone",
+          "handover_after",
         ].includes(k),
     ),
   );
@@ -102,13 +103,14 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       plan.revision, `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
   const operations = request.operations,
     intent = request.intent === undefined ? "edit" : request.intent;
-  require(["edit", "implement", "review", "decompose", "replan", "finish", "reopen"].includes(
+  require(["edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
     intent,
   ), "Invalid request intent");
   require(Array.isArray(operations) &&
     operations.length <= 100, "Expected at most 100 operations");
   require(request.review_mode === undefined || (intent === "review" && ["refresh", "independent"].includes(request.review_mode)), "Invalid review mode");
   require(request.review_focus === undefined || (intent === "review" && request.review_mode === "independent" && typeof request.review_focus === "string" && request.review_focus.length <= 2000), "Invalid review focus");
+  require(request.handover_reason === undefined || (intent === "handover" && typeof request.handover_reason === "string" && request.handover_reason.trim().length > 0 && request.handover_reason.length <= 2000), "Invalid handover reason");
   const independent = intent === "review" && request.review_mode === "independent";
   const selected =
       request.selected_step_ids === undefined ? [] : request.selected_step_ids,
@@ -121,6 +123,10 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(!selected.length && !targets.length, "A lifecycle request cannot select or authorize work");
     if (intent === "reopen") require(!operations.length, "Reopen the plan before submitting edits");
     if (plan.lifecycle === "finished") require(!operations.length, "Reopen this finished plan before changing work");
+  } else if (intent === "handover") {
+    require(!selected.length && targets.length <= 1, "A handover cannot authorize work and may locate at most one step");
+    targets.forEach(identifier);
+    require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "A handover is already active");
   } else if (["review", "decompose", "replan"].includes(intent)) {
     require(!selected.length, "A planning request cannot authorize implementation");
     require(targets.length > 0 &&
@@ -138,7 +144,7 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(new Set(selected).size ===
       selected.length, "Duplicate selected step");
   }
-  if (!["review", "decompose", "replan"].includes(intent))
+  if (!["review", "decompose", "replan", "handover"].includes(intent))
     require(!targets.length, "Unexpected planning targets");
   const result = applyOperations(plan, operations),
     available = Object.fromEntries(result.steps.map((s) => [s.id, s]));
@@ -162,7 +168,17 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     result.lifecycle = intent === "finish" ? "finished" : "active";
     // Reopening never resurrects the earlier implementation selection.
     if (intent === "finish" || plan.lifecycle === "finished") delete result.execution;
+  } else if (intent === "handover") {
+    const step = targets.length && Object.hasOwn(available, targets[0]) ? available[targets[0]] : undefined;
+    require(!targets.length || (!!step && step.status !== "pending"), "Locate a handover during active work or after a completed step");
+    result.handovers = [...(result.handovers ?? []), {
+      request_id: rid, revision: result.revision + 1, created_at: new Date().toISOString(), state: "requested",
+      position: step ? step.status === "in_progress" ? "during" : "after" : "between",
+      ...(step ? { step_id: step.id, step_title: step.title } : {}),
+      reason: request.handover_reason ?? "Continue in fresh context",
+    }];
   } else if (intent === "implement") {
+    require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "Finish or cancel the active handover before implementing");
     for (const sid of selected) {
       require(Object.hasOwn(
         available,
@@ -233,6 +249,8 @@ export function revise(plan: Plan, replacement: Plan, revision: number): Plan {
   result.revision = revision + 1;
   result.applied_requests = clone(plan.applied_requests ?? {});
   if (plan.plan_reviews) result.plan_reviews = clone(plan.plan_reviews);
+  if (plan.handovers) result.handovers = clone(plan.handovers); else delete result.handovers;
+  if (plan.execution_owner) result.execution_owner = plan.execution_owner; else delete result.execution_owner;
   delete result.execution;
   if (plan.execution != null) {
     result.execution = clone(plan.execution);
@@ -295,6 +313,7 @@ export function checkpoint(
   requireActive(plan);
   require(plan.revision ===
     revision, `Stale plan: current revision ${plan.revision}`);
+  require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)) || (!stepId && executionState !== "approved"), "Finish or cancel the active handover before checkpointing work");
   require(stepId != null ||
     executionState != null, "Checkpoint needs a step or execution state");
   require(stepId != null ||
@@ -404,6 +423,7 @@ export function summary(plan: Plan) {
     "title",
     "short_title",
     "milestone",
+    "handover_after",
     "kind",
     "checks",
     "run_after",
@@ -429,6 +449,8 @@ export function summary(plan: Plan) {
     render_policy: plan.lifecycle === "finished" ? "on_request" : "on_change",
     execution,
     ...(plan.plan_reviews ? { plan_reviews: clone(plan.plan_reviews) } : {}),
+    ...(plan.handovers ? { handovers: clone(plan.handovers) } : {}),
+    ...(plan.execution_owner ? { execution_owner: plan.execution_owner } : {}),
     steps: plan.steps.map((step) =>
       Object.fromEntries(
         fields.filter((k) => k in step).map((k) => [k, step[k]]),

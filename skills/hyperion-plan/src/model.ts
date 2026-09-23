@@ -3,7 +3,7 @@ import { JsonNumber, floatJSON, parseJSON } from "./json";
 export type Status = "pending" | "in_progress" | "completed";
 export type ExecutionState = "approved" | "paused" | "cancelled";
 export type Lifecycle = "active" | "finished";
-export type Intent = "edit" | "implement" | "review" | "decompose" | "replan" | "finish" | "reopen";
+export type Intent = "edit" | "implement" | "review" | "decompose" | "replan" | "finish" | "reopen" | "handover";
 export interface Note {
   id: string;
   text: string;
@@ -20,6 +20,7 @@ export interface Step {
   comments?: Note[];
   short_title?: string;
   milestone?: string;
+  handover_after?: string;
   kind?: "implementation" | "review";
   checks?: string[];
   depends_on?: string[];
@@ -53,6 +54,25 @@ export interface PlanReview {
   note?: string;
   findings: { step_ids: string[]; text: string; resolution: "applied" | "not_adopted" | "needs_input"; reason: string }[];
 }
+export interface Handover {
+  request_id: string;
+  revision: number;
+  created_at: string;
+  state: "requested" | "prepared" | "transferred" | "blocked" | "cancelled";
+  position: "during" | "after" | "between";
+  step_id?: string;
+  step_title?: string;
+  reason: string;
+  source_task_id?: string;
+  destination_task_id?: string;
+  brief_path?: string;
+  summary?: string;
+  next_action?: string;
+  code_state?: string;
+  context_digest?: string;
+  note?: string;
+  transferred_at?: string;
+}
 export interface Plan {
   schema_version: 1;
   plan_id: string;
@@ -64,6 +84,8 @@ export interface Plan {
   execution?: Execution;
   lifecycle?: Lifecycle;
   plan_reviews?: PlanReview[];
+  handovers?: Handover[];
+  execution_owner?: string;
   [key: string]: unknown;
 }
 export type Operation =
@@ -80,6 +102,7 @@ export type Operation =
       run_after?: string;
       after_step_id?: string;
     }
+  | { type: "set_handover_point"; step_id: string; reason: string }
   | { type: "remove_step"; step_id: string }
   | { type: "reorder_steps"; step_ids: string[] }
   | { type: "move_review"; step_id: string; after_step_id: string }
@@ -102,6 +125,7 @@ export interface ChangeRequest {
   target_step_ids?: string[];
   review_mode?: "refresh" | "independent";
   review_focus?: string;
+  handover_reason?: string;
 }
 export interface CardConfig {
   plan: Plan;
@@ -205,6 +229,37 @@ export function validate(value: unknown): Plan {
   );
   string(plan.title, "plan title", 200);
   requireValue(plan.lifecycle === undefined || ["active", "finished"].includes(plan.lifecycle), "Invalid plan lifecycle");
+  if (plan.execution_owner !== undefined) identifier(plan.execution_owner);
+  if (plan.handovers !== undefined) {
+    requireValue(Array.isArray(plan.handovers), "Invalid handover history");
+    requireValue(plan.handovers.filter(h => record(h) && ["requested", "prepared", "blocked"].includes(h.state)).length <= 1, "A handover is already active");
+    const ids = new Set<string>();
+    for (const h of plan.handovers) {
+      requireValue(record(h), "Invalid handover event");
+      identifier(h.request_id);
+      requireValue(!ids.has(h.request_id), "Duplicate handover request"); ids.add(h.request_id);
+      requireValue(Number.isSafeInteger(h.revision) && h.revision > 0 && h.revision <= plan.revision, "Invalid handover revision");
+      requireValue(typeof h.created_at === "string" && Number.isFinite(Date.parse(h.created_at)), "Invalid handover timestamp");
+      requireValue(["requested", "prepared", "transferred", "blocked", "cancelled"].includes(h.state), "Invalid handover state");
+      requireValue(["during", "after", "between"].includes(h.position), "Invalid handover position");
+      if (h.position === "between") requireValue(h.step_id === undefined && h.step_title === undefined, "Between-step handover cannot name a step");
+      else { identifier(h.step_id); string(h.step_title, "handover step title", 200); }
+      string(h.reason, "handover reason", 2000);
+      for (const field of ["source_task_id", "destination_task_id"] as const) if (h[field] !== undefined) identifier(h[field]);
+      requireValue(!h.destination_task_id || (!!h.source_task_id && h.destination_task_id !== h.source_task_id), "Handover needs distinct source and destination tasks");
+      for (const field of ["brief_path", "summary", "next_action", "code_state", "note", "context_digest"] as const)
+        if (h[field] !== undefined) string(h[field], field, 4000);
+      if (["prepared", "transferred"].includes(h.state)) {
+        identifier(h.source_task_id);
+        for (const field of ["brief_path", "summary", "next_action", "code_state", "context_digest"] as const) string(h[field], field, 4000);
+      }
+      if (h.state === "transferred") {
+        identifier(h.destination_task_id);
+        requireValue(typeof h.transferred_at === "string" && Number.isFinite(Date.parse(h.transferred_at)), "Invalid transfer timestamp");
+      }
+      if (["blocked", "cancelled"].includes(h.state)) string(h.note, "handover outcome", 4000);
+    }
+  }
   if (plan.plan_reviews !== undefined) {
     requireValue(Array.isArray(plan.plan_reviews), "Invalid plan reviews");
     requireValue(plan.plan_reviews.filter(r => record(r) && ["requested", "running"].includes(r.state)).length <= 1, "An independent plan review is already active");
@@ -250,6 +305,7 @@ export function validate(value: unknown): Plan {
     ids.add(sid);
     string(step.title, "step title", 200);
     string(defaultValue(step.short_title, ""), "short title", 80, true);
+    if (step.handover_after !== undefined) string(step.handover_after, "handover point reason", 2000, true);
     if (step.milestone !== undefined) string(step.milestone, "milestone", 100, true);
     string(defaultValue(step.description, ""), "description", 4000, true);
     string(defaultValue(step.done_when, ""), "done_when", 2000, true);
@@ -653,6 +709,10 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
       );
       result.steps.splice(result.steps.indexOf(step), 1);
       revoke(sid);
+    } else if (op.type === "set_handover_point") {
+      const reason = string(op.reason, "handover point reason", 2000, true);
+      if (reason.trim()) step.handover_after = reason;
+      else delete step.handover_after;
     } else if (op.type === "set_status") {
       requireValue(
         ["pending", "completed"].includes(op.status),

@@ -124,6 +124,41 @@
     );
     string(plan.title, "plan title", 200);
     requireValue(plan.lifecycle === void 0 || ["active", "finished"].includes(plan.lifecycle), "Invalid plan lifecycle");
+    if (plan.execution_owner !== void 0) identifier(plan.execution_owner);
+    if (plan.handovers !== void 0) {
+      requireValue(Array.isArray(plan.handovers), "Invalid handover history");
+      requireValue(plan.handovers.filter((h) => record(h) && ["requested", "prepared", "blocked"].includes(h.state)).length <= 1, "A handover is already active");
+      const ids2 = /* @__PURE__ */ new Set();
+      for (const h of plan.handovers) {
+        requireValue(record(h), "Invalid handover event");
+        identifier(h.request_id);
+        requireValue(!ids2.has(h.request_id), "Duplicate handover request");
+        ids2.add(h.request_id);
+        requireValue(Number.isSafeInteger(h.revision) && h.revision > 0 && h.revision <= plan.revision, "Invalid handover revision");
+        requireValue(typeof h.created_at === "string" && Number.isFinite(Date.parse(h.created_at)), "Invalid handover timestamp");
+        requireValue(["requested", "prepared", "transferred", "blocked", "cancelled"].includes(h.state), "Invalid handover state");
+        requireValue(["during", "after", "between"].includes(h.position), "Invalid handover position");
+        if (h.position === "between") requireValue(h.step_id === void 0 && h.step_title === void 0, "Between-step handover cannot name a step");
+        else {
+          identifier(h.step_id);
+          string(h.step_title, "handover step title", 200);
+        }
+        string(h.reason, "handover reason", 2e3);
+        for (const field of ["source_task_id", "destination_task_id"]) if (h[field] !== void 0) identifier(h[field]);
+        requireValue(!h.destination_task_id || !!h.source_task_id && h.destination_task_id !== h.source_task_id, "Handover needs distinct source and destination tasks");
+        for (const field of ["brief_path", "summary", "next_action", "code_state", "note", "context_digest"])
+          if (h[field] !== void 0) string(h[field], field, 4e3);
+        if (["prepared", "transferred"].includes(h.state)) {
+          identifier(h.source_task_id);
+          for (const field of ["brief_path", "summary", "next_action", "code_state", "context_digest"]) string(h[field], field, 4e3);
+        }
+        if (h.state === "transferred") {
+          identifier(h.destination_task_id);
+          requireValue(typeof h.transferred_at === "string" && Number.isFinite(Date.parse(h.transferred_at)), "Invalid transfer timestamp");
+        }
+        if (["blocked", "cancelled"].includes(h.state)) string(h.note, "handover outcome", 4e3);
+      }
+    }
     if (plan.plan_reviews !== void 0) {
       requireValue(Array.isArray(plan.plan_reviews), "Invalid plan reviews");
       requireValue(plan.plan_reviews.filter((r) => record(r) && ["requested", "running"].includes(r.state)).length <= 1, "An independent plan review is already active");
@@ -168,6 +203,7 @@
       ids.add(sid);
       string(step.title, "step title", 200);
       string(defaultValue(step.short_title, ""), "short title", 80, true);
+      if (step.handover_after !== void 0) string(step.handover_after, "handover point reason", 2e3, true);
       if (step.milestone !== void 0) string(step.milestone, "milestone", 100, true);
       string(defaultValue(step.description, ""), "description", 4e3, true);
       string(defaultValue(step.done_when, ""), "done_when", 2e3, true);
@@ -509,6 +545,10 @@
         );
         result.steps.splice(result.steps.indexOf(step), 1);
         revoke(sid);
+      } else if (op.type === "set_handover_point") {
+        const reason = string(op.reason, "handover point reason", 2e3, true);
+        if (reason.trim()) step.handover_after = reason;
+        else delete step.handover_after;
       } else if (op.type === "set_status") {
         requireValue(
           ["pending", "completed"].includes(op.status),
@@ -585,6 +625,7 @@
     const list = q(".pc-steps"), apply = q(".pc-apply"), implement = q(".pc-implement"), lifecycle = q(".pc-lifecycle"), message = q(".pc-status");
     let draft = clone(base.steps), selected = /* @__PURE__ */ new Set(), expanded = /* @__PURE__ */ new Set(), settings = /* @__PURE__ */ new Set(), milestones = /* @__PURE__ */ Object.create(null), removed = [], notes = /* @__PURE__ */ new Map(), menu = null, sending = false, requestIds = {}, interacted = false;
     let reviewFocus = "";
+    let handoverReason = "Continue in fresh context";
     let dragging = null;
     let dragPointer = null;
     let dropTarget = null;
@@ -785,6 +826,8 @@
               after_step_id: step.run_after
             });
         }
+        if ((step.handover_after ?? "") !== (old?.handover_after ?? ""))
+          ops.push({ type: "set_handover_point", step_id: step.id, reason: step.handover_after ?? "" });
         if (!old && step.status !== "pending")
           statusOps.push({
             type: "set_status",
@@ -858,6 +901,7 @@
           milestones,
           request_ids: requestIds,
           review_focus: reviewFocus,
+          handover_reason: handoverReason,
           note_editors: [...notes].filter(([id]) => draft.some((s) => s.id === id)).map(([step_id, n]) => ({ step_id, id: n.id }))
         }
       };
@@ -918,6 +962,7 @@
         settings = new Set(
           Array.isArray(saved.privateContent?.settings) ? saved.privateContent.settings : []
         );
+        handoverReason = typeof saved.privateContent?.handover_reason === "string" ? saved.privateContent.handover_reason.slice(0, 2e3) : "Continue in fresh context";
         reviewFocus = typeof saved.privateContent?.review_focus === "string" ? saved.privateContent.review_focus.slice(0, 2e3) : "";
         requestIds = state.ui_version === 3 && saved.privateContent?.request_ids || {};
         if (restoredView() === previousView) return false;
@@ -1076,6 +1121,65 @@
       const reviewIndex = remaining.findIndex(isReview);
       return remaining.slice(0, reviewIndex < 0 ? void 0 : reviewIndex).filter((s) => ready.includes(s) && !broad(s)).slice(0, 3);
     }
+    function handoverActive() {
+      return !!base.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state));
+    }
+    function renderHandovers() {
+      let strip = root.querySelector(".pc-handovers");
+      if (!strip) {
+        strip = el("div", "pc-handovers");
+        q(".pc-next").before(strip);
+      }
+      strip.replaceChildren();
+      for (const h of base.handovers ?? []) {
+        const event = el("details", "pc-handover-event");
+        const location = h.position === "between" ? "between steps" : `${h.position} \u201C${h.step_title}\u201D`;
+        event.append(el("summary", "", `Context handover \xB7 ${location} \xB7 ${h.state}`));
+        event.append(el("p", "", h.reason));
+        for (const [label, id] of [["Source task", h.source_task_id], [h.state === "transferred" ? "Continue in task" : "Destination task", h.destination_task_id]]) {
+          if (!id) continue;
+          const link = el("a", "", label);
+          link.href = `codex://threads/${encodeURIComponent(id)}`;
+          event.append(link, document.createTextNode(" "));
+        }
+        for (const [label, text] of [["Work so far", h.summary], ["Next", h.next_action], ["Code state", h.code_state], ["Note", h.note]])
+          if (text) event.append(el("p", "", `${label}: ${text}`));
+        event.append(el("p", "pc-muted", `Plan revision ${h.revision} \xB7 ${h.created_at}`));
+        strip.append(event);
+      }
+      strip.hidden = !base.handovers?.length;
+    }
+    function openHandover(stepId) {
+      if (finished || handoverActive()) return;
+      root.querySelector(".pc-handover-dialog")?.remove();
+      const dialog = el("dialog", "pc-plan-review-dialog pc-handover-dialog");
+      dialog.setAttribute("aria-label", "Continue in fresh task");
+      const step = stepId ? byId(stepId) : draft.find((s) => s.status === "in_progress") ?? [...draft].reverse().find((s) => s.status === "completed");
+      dialog.append(
+        el("h3", "", "Continue in fresh task"),
+        el("p", "", "Keep this plan, working files, progress, and existing approvals. A fresh task receives a short handover brief and takes over execution."),
+        el("p", "", step ? `Handover ${step.status === "in_progress" ? "during" : "after"} \u201C${step.title}\u201D.` : "Handover between steps."),
+        el("p", "", "This saves pending edits. Checked steps do not grant additional implementation approval.")
+      );
+      const label = el("label", "", "Reason");
+      const input = el("textarea", "pc-handover-reason");
+      input.maxLength = 2e3;
+      input.value = handoverReason;
+      label.append(input);
+      const start = btn("Continue in fresh task", "pc-start-handover", () => {
+        dialog.close();
+        submit("handover", step ? [step.id] : []);
+      });
+      start.disabled = !input.value.trim();
+      input.addEventListener("input", () => {
+        handoverReason = input.value;
+        start.disabled = !input.value.trim();
+        save();
+      });
+      dialog.append(label, start, btn("Cancel", "", () => dialog.close()));
+      root.append(dialog);
+      dialog.showModal();
+    }
     function renderPlanReviews() {
       let strip = root.querySelector(".pc-plan-reviews");
       if (!strip) {
@@ -1164,6 +1268,7 @@
       const panel = q(".pc-next");
       panel.replaceChildren();
       renderPlanReviews();
+      renderHandovers();
       panel.hidden = finished || !draft.some((s) => s.status !== "completed");
       if (panel.hidden) return;
       const batch = suggestedBatch();
@@ -1195,6 +1300,9 @@
       review.title = "Assess scope, sequencing, dependencies, and acceptance criteria without implementing or reviewing completed code.";
       review.disabled = !!sending;
       actions.append(review);
+      const handover = btn("Continue in fresh task", "pc-handover", () => openHandover());
+      handover.disabled = !!sending || handoverActive();
+      actions.append(handover);
       panel.append(actions);
     }
     function updateActions() {
@@ -1224,7 +1332,8 @@
       q('.pc-add-type option[value="review"]').disabled = !draft.some((s) => !isReview(s));
       q(".pc-insert-review").disabled = !!sending || draft.length >= 30 || !draft.some((s) => !isReview(s));
       q(".pc-storage").textContent = config.preview ? "Demo edits stay in this card; they are not written to the plan file." : edited ? "Unsaved draft \xB7 Save edits sends it to Codex for writing to disk." : ops.length ? "Order updated in this card \xB7 included with your next plan action." : `Saved plan \xB7 revision ${base.revision} \xB7 checks and notes kept in ${config.source_name || "the plan file"} and PR notes.`;
-      implement.disabled = !!sending || !ids.length;
+      implement.disabled = !!sending || !ids.length || handoverActive();
+      implement.title = handoverActive() ? "Finish or cancel the handover before continuing work." : "";
       implement.textContent = sending === "implement" ? "Opening\u2026" : runLabel(ids);
       const large = ids.filter((id) => broad(byId(id)));
       q(".pc-large-warning").hidden = !large.length;
@@ -1512,6 +1621,20 @@
           );
           actions.append(heading);
           const buttons = el("div", "pc-menu-buttons");
+          const point = btn(step.handover_after ? "Remove handover point" : "Mark handover point after this", "pc-mark-handover", () => {
+            menu = null;
+            mutate(() => {
+              if (step.handover_after) delete step.handover_after;
+              else step.handover_after = "A coherent batch ends here; consider continuing in fresh context.";
+            });
+          });
+          point.disabled = !!sending;
+          buttons.append(point);
+          if (step.status !== "pending") {
+            const handover = btn("Continue in fresh task", "pc-step-handover", () => openHandover(step.id));
+            handover.disabled = !!sending || handoverActive();
+            buttons.append(handover);
+          }
           if (canReorder(step)) {
             const index = draft.indexOf(step);
             for (const [label, direction] of [
@@ -1903,6 +2026,19 @@
           extra.append(editor);
         }
         row.append(details);
+        if (step.handover_after) {
+          const point = el("div", "pc-handover-point");
+          point.append(el("strong", "", "Good handover point"), el("span", "", " \xB7 " + step.handover_after));
+          point.title = "Suggested boundary, not a prediction of compaction.";
+          if (!finished && step.status === "completed") {
+            const continueHere = btn("Continue in fresh task", "pc-point-handover", () => openHandover(step.id));
+            continueHere.disabled = !!sending || handoverActive();
+            point.append(continueHere);
+          }
+          row.append(point);
+        }
+        for (const h of base.handovers ?? []) if (h.step_id === step.id)
+          row.append(el("p", "pc-handover-inline", `Context handover ${h.position} this step \xB7 ${h.state}`));
         (destinations.get(step.id) || list).append(row);
       }
       if (finished) {
@@ -2071,7 +2207,7 @@
       const lifecycleAction = intent === "finish" || intent === "reopen";
       if (finished && intent !== "reopen") return;
       const ops = intent === "reopen" ? [] : operations(), ids = selection(), planning = ["review", "decompose", "replan"].includes(intent);
-      if (sending || !lifecycleAction && (intent === "edit" ? !ops.some((op) => op.type !== "reorder_steps") : planning ? !targets.length : !ids.length))
+      if (sending || !lifecycleAction && intent !== "handover" && (intent === "edit" ? !ops.some((op) => op.type !== "reorder_steps") : planning ? !targets.length : !ids.length))
         return;
       try {
         replay(ops);
@@ -2083,7 +2219,7 @@
       }
       if (config.preview) {
         notify(
-          lifecycleAction ? `Preview: Codex would ${intent === "finish" ? "finish this plan and stop automatic cards, keeping task statuses" : "reopen this plan without authorizing work"}. No request was sent.` : intent === "implement" ? `Preview: ${runLabel(ids)}. Review steps open fresh Codex tasks; unselected steps stay for later. No request was sent.` : planning ? reviewMode ? `Preview: a fresh task would independently review ${targets.length} plan steps. No request was sent.` : `Preview: Codex would ${intent === "replan" ? "replan dependencies for" : intent === "decompose" ? "break down" : "review"} ${targets.length} ${targets.length === 1 ? "step" : "steps"} without starting implementation. No request was sent.` : "Preview: edits are kept here. No request was sent."
+          intent === "handover" ? "Preview: Codex would prepare a handover and continue this canonical plan in a fresh task. No request was sent." : lifecycleAction ? `Preview: Codex would ${intent === "finish" ? "finish this plan and stop automatic cards, keeping task statuses" : "reopen this plan without authorizing work"}. No request was sent.` : intent === "implement" ? `Preview: ${runLabel(ids)}. Review steps open fresh Codex tasks; unselected steps stay for later. No request was sent.` : planning ? reviewMode ? `Preview: a fresh task would independently review ${targets.length} plan steps. No request was sent.` : `Preview: Codex would ${intent === "replan" ? "replan dependencies for" : intent === "decompose" ? "break down" : "review"} ${targets.length} ${targets.length === 1 ? "step" : "steps"} without starting implementation. No request was sent.` : "Preview: edits are kept here. No request was sent."
         );
         return;
       }
@@ -2093,7 +2229,7 @@
         );
         return;
       }
-      const key = planning ? intent + ":" + targets.join(",") + (reviewMode ? ":" + reviewMode + ":" + reviewFocus : "") : intent;
+      const key = intent === "handover" ? `handover:${targets.join(",")}:${handoverReason}` : planning ? intent + ":" + targets.join(",") + (reviewMode ? ":" + reviewMode + ":" + reviewFocus : "") : intent;
       requestIds[key] = requestIds[key] || uid();
       const request = {
         plan_id: base.plan_id,
@@ -2103,14 +2239,15 @@
         operations: ops
       };
       if (intent === "implement") request.selected_step_ids = ids;
-      if (planning) request.target_step_ids = targets;
+      if (planning || intent === "handover") request.target_step_ids = targets;
+      if (intent === "handover") request.handover_reason = handoverReason.trim();
       if (reviewMode) {
         request.review_mode = reviewMode;
         request.review_focus = reviewFocus;
       }
-      const instruction = reviewMode === "independent" ? "Apply this request first, then follow references/plan-review.md to launch one independent plan review in a fresh Codex task. Review requirements, architecture, completeness, sequencing, and acceptance criteria for target_step_ids against relevant code. Reuse an existing task on retry. The reviewer must return findings only: no new Hyperion plan, canonical-plan edits, implementation, or recursive reviews. Reconcile findings into the existing plan, recording applied, not adopted with reasons, or needs your input. Preserve completed history and implementation authorization boundaries. Show the refreshed plan." : intent === "finish" ? "Apply the included draft edits and finish this plan through the helper. Preserve every task's actual status and notes; unfinished tasks remain unfinished. Clear implementation approval. Confirm briefly in text and do not render another card. Keep this plan quiet on future follow-ups unless the user explicitly asks to show or reopen it." : intent === "reopen" ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection." : intent === "implement" ? "Apply the included plan edits, then implement ONLY the selected_step_ids listed below in prerequisite order. Keep unselected steps for later. Selection is not completion. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward." : intent === "decompose" ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation." : intent === "review" ? "Apply the included edits, then review the plan for target_step_ids and their prerequisites: assess scope, sequencing, dependencies, and acceptance criteria against current code. This is a plan review, not an implemented-code review. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation." : "Revise the plan and acknowledge notes; this request does not start implementation. Refresh the interactive card afterward.";
+      const instruction = intent === "handover" ? "Apply this handover request, then follow references/handovers.md. Prepare a concise brief and launch one fresh Codex task on the same working checkout and canonical plan (the user explicitly requests this). Do not fork conversation history or create another plan. Initially the destination must only verify the handover and report ready. Record source and destination task IDs, observed code state, work so far, and next action. Transfer ownership through the helper before sending the destination a follow-up to continue only existing approved scope. Preserve the interrupted step's in_progress status. Reuse recorded tasks on retries. After transfer, stop implementation in this source task and link the destination. Do not claim to have avoided compaction if it already happened." : reviewMode === "independent" ? "Apply this request first, then follow references/plan-review.md to launch one independent plan review in a fresh Codex task. Review requirements, architecture, completeness, sequencing, and acceptance criteria for target_step_ids against relevant code. Reuse an existing task on retry. The reviewer must return findings only: no new Hyperion plan, canonical-plan edits, implementation, or recursive reviews. Reconcile findings into the existing plan, recording applied, not adopted with reasons, or needs your input. Preserve completed history and implementation authorization boundaries. Show the refreshed plan." : intent === "finish" ? "Apply the included draft edits and finish this plan through the helper. Preserve every task's actual status and notes; unfinished tasks remain unfinished. Clear implementation approval. Confirm briefly in text and do not render another card. Keep this plan quiet on future follow-ups unless the user explicitly asks to show or reopen it." : intent === "reopen" ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection." : intent === "implement" ? "Apply the included plan edits, then implement ONLY the selected_step_ids listed below in prerequisite order. Keep unselected steps for later. Selection is not completion. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward." : intent === "decompose" ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation." : intent === "review" ? "Apply the included edits, then review the plan for target_step_ids and their prerequisites: assess scope, sequencing, dependencies, and acceptance criteria against current code. This is a plan review, not an implemented-code review. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation." : "Revise the plan and acknowledge notes; this request does not start implementation. Refresh the interactive card afterward.";
       const reviewInstruction = intent === "implement" ? ' Steps with kind="review" are independent reviews: export their review brief including covered step descriptions, acceptance criteria, and notes, and create a fresh Codex task with that brief and the scoped code snapshot; follow references/review-checks.md. Honor run_after as timing and depends_on as inspected scope. Follow list order among ready selected steps. Review selection does not authorize fixes.' : intent === "replan" ? " Replan dependencies of the target_step_ids so a later removal can be considered. Identify every dependent by name, including run_after references and review coverage. Rewire only when the actual requirements support it; otherwise explain the concrete decision needed. Preserve the target, completed history, and active work. Do not delete steps, revert code, or start implementation. Clear affected freshness warnings only after checking the revised plan." : "";
-      const prompt = "Use $hyperion-plan. Read the skill at " + config.skill_path + ".\nPlan file: " + config.plan_path + "\nAdapt explanations and necessary questions to the user\u2019s demonstrated familiarity with this task. Short messages alone do not imply low expertise. For unfamiliar users, clarify functional goals and explain architectural tradeoffs in plain language; do not repeat resolved questions.\n" + instruction + reviewInstruction + "\n\nChange request JSON:\n" + JSON.stringify(request, null, 2);
+      const prompt = "Use $hyperion-plan. Read the skill at " + config.skill_path + ".\nPlan file: " + config.plan_path + "\nAdapt explanations and necessary questions to the user\u2019s demonstrated familiarity with this task. Short messages alone do not imply low expertise. For unfamiliar users, clarify functional goals and explain architectural tradeoffs in plain language; do not repeat resolved questions.\n" + instruction + reviewInstruction + "\nBefore mutations, check execution_owner. Supply --task-id with your actual task ID if required. If another task owns the plan, direct the user to it instead of impersonating its ID.\n\nChange request JSON:\n" + JSON.stringify(request, null, 2);
       sending = intent;
       menu = null;
       save();
@@ -2118,7 +2255,7 @@
       try {
         await window.openai.sendFollowUpMessage({
           prompt,
-          title: intent === "finish" ? "Finish this plan" : intent === "reopen" ? "Reopen this plan" : intent === "implement" ? runLabel(ids) : intent === "replan" ? "Replan dependencies" : intent === "decompose" ? "Break down the selected steps" : intent === "review" ? reviewMode ? "Independent plan review" : "Review the affected plan steps" : "Save edits to this task plan"
+          title: intent === "handover" ? "Continue this plan in a fresh task" : intent === "finish" ? "Finish this plan" : intent === "reopen" ? "Reopen this plan" : intent === "implement" ? runLabel(ids) : intent === "replan" ? "Replan dependencies" : intent === "decompose" ? "Break down the selected steps" : intent === "review" ? reviewMode ? "Independent plan review" : "Review the affected plan steps" : "Save edits to this task plan"
         });
         notify(
           "Review the send dialog. Codex will confirm the disk save in its reply; your edits and selection stay here."

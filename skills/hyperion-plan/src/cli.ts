@@ -45,6 +45,7 @@ import {
   migrate,
   withLock,
 } from "./storage";
+import { assertExecutionOwner, updateHandover, handoverBrief } from "./handovers";
 import { render, prNotes, reviewBrief } from "./exports";
 async function main() {
   let [command, ...argv] = process.argv.slice(2);
@@ -78,11 +79,11 @@ async function main() {
   const arg = (k: string) =>
     typeof v[k] === "string" ? (v[k] as string) : undefined;
   require(arg("plan"), "Missing --plan");
-  for (const key of ["init", "revise", "plan-review"].includes(command)
+  for (const key of ["init", "revise", "plan-review", "handover"].includes(command)
     ? ["input"]
     : command === "apply"
       ? ["request"]
-      : ["render", "migrate"].includes(command)
+      : ["render", "migrate", "handover-brief"].includes(command)
         ? ["output"]
         : [])
     require(arg(key), `Missing --${key}`);
@@ -91,7 +92,7 @@ async function main() {
       ? Number(arg("base-revision"))
       : undefined;
   const targeted = command.startsWith("step ") || command.startsWith("note ");
-  if (["revise", "checkpoint", "review", "finish", "reopen", "plan-review"].includes(command) || targeted)
+  if (["revise", "checkpoint", "review", "finish", "reopen", "plan-review", "handover"].includes(command) || targeted)
     require(Number.isSafeInteger(
       revision,
     ), "Missing or invalid --base-revision");
@@ -107,12 +108,15 @@ async function main() {
       (arg("text-file") !==
         undefined), "Supply exactly one of --text or --text-file");
   }
+  if (command === "handover-brief") require(arg("request-id"), "Missing --request-id");
+  const actor = arg("task-id") ?? process.env.CODEX_THREAD_ID;
+  const writesPlan = !["status", "show", "next", "render", "export", "review-brief", "handover-brief"].includes(command);
   const dryRun = !!v["dry-run"],
     readOnly = dryRun || ["show", "next"].includes(command);
   let p = path.resolve(arg("plan")!);
   if (command !== "migrate") p = resolvePlanPath(p);
   const execute = async () => {
-    const exporting = ["render", "export", "review-brief"].includes(command);
+    const exporting = ["render", "export", "review-brief", "handover-brief"].includes(command);
     const exportOutput = exporting
       ? (arg("output") ??
         (command === "export"
@@ -155,6 +159,7 @@ async function main() {
         let dirty: boolean;
         [current, dirty, sourceDigest] = loadMarkdown(p);
         refreshRequired = dirty;
+        if (writesPlan) assertExecutionOwner(current, actor);
         if (readOnly) {
           const stateAfter = fs.existsSync(markdownStatePath(p))
             ? readText(markdownStatePath(p))
@@ -172,7 +177,7 @@ async function main() {
             sourceDigest, "Markdown changed during this operation; refresh instead of overwriting it");
           saveRecovery(p, text, sourceDigest);
         }
-      } else current = validate(read(p));
+      } else { current = validate(read(p)); if (writesPlan) assertExecutionOwner(current, actor); }
     }
     if (command === "show") {
       const { applied_requests, ...publicPlan } = current!;
@@ -221,7 +226,7 @@ async function main() {
       );
       return;
     }
-    if (["render", "export", "review-brief"].includes(command)) {
+    if (["render", "export", "review-brief", "handover-brief"].includes(command)) {
       const output = exportOutput!;
       atomicText(
         output,
@@ -229,7 +234,7 @@ async function main() {
           ? render(current!, p, !!v.preview)
           : command === "export"
             ? prNotes(current!)
-            : reviewBrief(current!, arg("step-id")!),
+            : command === "handover-brief" ? handoverBrief(current!, arg("request-id")!) : reviewBrief(current!, arg("step-id")!),
       );
       console.log(path.resolve(output));
       return;
@@ -286,6 +291,8 @@ async function main() {
         arg("blocked-by"),
         arg("execution-state") as ExecutionState | undefined,
       );
+    else if (command === "handover")
+      [plan, changed] = updateHandover(current!, revision!, read(arg("input")!), actor);
     else if (command === "plan-review")
       [plan, changed] = updatePlanReview(current!, revision!, read(arg("input")!));
     else if (command === "review")

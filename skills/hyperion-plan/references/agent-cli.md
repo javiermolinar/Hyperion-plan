@@ -87,3 +87,9 @@ After meaningful saved changes to an active plan, render with `render --plan PLA
 ## Independent plan review records
 
 `plan-review --plan PLAN_MD --base-revision N --input UPDATE_JSON` records progress and findings for an applied independent plan-review request. See [Independent plan review](plan-review.md) for the update format, fresh-task workflow, and reconciliation rules. It preserves implementation authority and rejects stale writes.
+
+## Context handovers
+
+Use `handover --plan PLAN_MD --base-revision N --task-id ACTUAL_TASK_ID --input UPDATE_JSON` to prepare, transfer, block, or cancel an applied handover request. `handover-brief --plan PLAN_MD --request-id ID --output BRIEF_MD` exports prepared context. See [Context handovers](handovers.md) for schemas and the readiness/ownership protocol. Once `execution_owner` is recorded, mutating CLI commands require the actual owner's `--task-id` (or runtime-provided `CODEX_THREAD_ID`).
+
+The optional `handover_after` string on a step describes an advisory boundary and can be set with `step update --input`. An empty string removes its visible marker. It does not change implementation scope.

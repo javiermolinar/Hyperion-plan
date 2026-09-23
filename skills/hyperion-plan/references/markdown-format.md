@@ -63,3 +63,7 @@ Migration verifies the round trip before replacing the legacy JSON with a redire
 Keep rendered HTML outside the repository in the durable task visualization directory. Use a distinct file for each published revision, retaining earlier files while conversation cards refer to them. The inline renderer requires a file path; HTML is not another source of truth. Do not delete old HTML as part of migration.
 
 The helper regenerates `<plan-stem>-pr-notes.md` after saves. `review-brief` exports required checks plus covered intent and notes from the Markdown source; the agent must still attach the exact code snapshot and test evidence before starting a fresh reviewer. JSON operation payloads and optional structured revision drafts remain supported as transport, not as a second canonical plan.
+
+## Context handover metadata
+
+Step metadata may include `handover_after`, an advisory reason to consider a fresh task after that step. It is independent of prerequisites and approval. Plan metadata stores durable `handovers` events and optional `execution_owner`. Use the `handover` command and [handover protocol](handovers.md) to maintain these records; do not edit them to invent ownership, rewrite past events, or grant approval.
