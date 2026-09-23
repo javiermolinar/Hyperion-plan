@@ -11,7 +11,7 @@ Hyperion Plan gives you control over how Codex tackles substantial engineering w
 Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.3.0/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.3.1/skills/hyperion-plan
 ```
 
 Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$hyperion-plan`.
@@ -21,10 +21,10 @@ Upgrading from v1.0.0? Remove the old `plan-companion` skill after installing `h
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hyperion-plan-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/hyperion-plan-light.png">
-  <img src="assets/hyperion-plan-dark.png" alt="Hyperion Plan showing a five-step example plan, two selected tasks, an independent review step, and the Implement button at the bottom" width="736">
+  <img src="assets/hyperion-plan-dark.png" alt="Hyperion Plan showing a five-step example plan, two selected tasks, explicit reasoning efforts, an independent review, and an automatic context handover" width="736">
 </picture>
 
-*Example plan with two steps selected. The card follows your light or dark appearance.*
+*Example plan with two steps selected, reasoning efforts, and a handover checkpoint. The card follows your light or dark appearance.*
 
 ## Take control of the work
 
