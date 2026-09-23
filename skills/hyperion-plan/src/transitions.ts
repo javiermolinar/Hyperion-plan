@@ -20,6 +20,7 @@ import {
   applyOperations,
   invalidateDependents,
   checkReady,
+  withHandoverCheckpoints,
   EXECUTION_STATES,
   STATUSES,
 } from "./model";
@@ -53,6 +54,7 @@ export function stepFingerprint(step: Step): { status: Status; scope: string } {
           "review_note",
           "milestone",
           "handover_after",
+          "reasoning_effort",
         ].includes(k),
     ),
   );
@@ -170,7 +172,11 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     if (intent === "finish" || plan.lifecycle === "finished") delete result.execution;
   } else if (intent === "handover") {
     const step = targets.length && Object.hasOwn(available, targets[0]) ? available[targets[0]] : undefined;
-    require(!targets.length || (!!step && step.status !== "pending"), "Locate a handover during active work or after a completed step");
+    if (step?.kind === "handover") {
+      require(step.status === "pending", "Handover checkpoint already started or completed");
+      checkReady(step, available, [], result.steps);
+      step.status = "in_progress";
+    } else require(!targets.length || (!!step && step.status !== "pending"), "Locate a handover during active work or after a completed step");
     result.handovers = [...(result.handovers ?? []), {
       request_id: rid, revision: result.revision + 1, created_at: new Date().toISOString(), state: "requested",
       position: step ? step.status === "in_progress" ? "during" : "after" : "between",
@@ -179,19 +185,20 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     }];
   } else if (intent === "implement") {
     require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "Finish or cancel the active handover before implementing");
-    for (const sid of selected) {
+    const executionSelection = withHandoverCheckpoints(result.steps, selected);
+    for (const sid of executionSelection) {
       require(Object.hasOwn(
         available,
         sid,
       ), `Selected step is absent or removed: ${sid}`);
       require(available[sid].status !==
         "completed", `Selected step is already completed: ${sid}`);
-      checkReady(available[sid], available, selected);
+      checkReady(available[sid], available, executionSelection, result.steps);
     }
     result.execution = {
       request_id: rid,
       state: "approved",
-      selected_step_ids: clone(selected),
+      selected_step_ids: clone(executionSelection),
     };
   } else if (independent) {
     require(!result.plan_reviews?.some(r => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
@@ -272,6 +279,10 @@ export function revise(plan: Plan, replacement: Plan, revision: number): Plan {
       ? oldSteps[step.id]
       : undefined;
     if (!old) continue;
+    if (old.kind === "handover") {
+      require(step.kind === "handover", "Preserve handover checkpoint type");
+      require(step.status === old.status, "Handover checkpoints complete only when ownership transfers");
+    }
     if (old.kind === "review" && old.status !== "pending")
       for (const field of ["kind", "depends_on", "checks", "run_after"] as const)
         require(
@@ -334,6 +345,7 @@ export function checkpoint(
       identifier(stepId),
     ), "Step is outside the recorded implementation scope");
     const step = result.steps.find((s) => s.id === stepId)!;
+    require(step.kind !== "handover", "Use the handover lifecycle for checkpoints");
     if (blockedBy === "" || status === "completed") delete step.blocked_by;
     if (status != null) {
       require(STATUSES.includes(status), "Invalid checkpoint status");
@@ -344,6 +356,7 @@ export function checkpoint(
         checkReady(
           step,
           Object.fromEntries(result.steps.map((s) => [s.id, s])),
+          [], result.steps,
         );
       if (status === "completed") {
         string(note, "completion evidence", 2000);
@@ -432,6 +445,7 @@ export function summary(plan: Plan) {
     "progress_note",
     "blocked_by",
     "depends_on",
+    "reasoning_effort",
     "complexity",
     "complexity_reason",
     "size",

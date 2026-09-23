@@ -47,6 +47,7 @@ node SKILL_DIR/dist/plan.cjs step remove --plan PLAN_MD --base-revision REV --st
 
 - `title`, `short_title`, `milestone`, `description`, `done_when`
 - `depends_on` (array of stable IDs)
+- `reasoning_effort` (`inherit`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; model support varies). Use `inherit` to clear an override. Changing only this execution preference preserves approval and freshness.
 - `complexity`, `complexity_reason`, `estimated_files`, `estimate_note`, `scope_warning`
 - `checks`, `run_after` for review steps; active/completed reviews retain their scope and timing
 - `kind` only when adding a step
@@ -93,3 +94,5 @@ After meaningful saved changes to an active plan, render with `render --plan PLA
 Use `handover --plan PLAN_MD --base-revision N --task-id ACTUAL_TASK_ID --input UPDATE_JSON` to prepare, transfer, block, or cancel an applied handover request. `handover-brief --plan PLAN_MD --request-id ID --output BRIEF_MD` exports prepared context. See [Context handovers](handovers.md) for schemas and the readiness/ownership protocol. Once `execution_owner` is recorded, mutating CLI commands require the actual owner's `--task-id` (or runtime-provided `CODEX_THREAD_ID`).
 
 The optional `handover_after` string on a step describes an advisory boundary and can be set with `step update --input`. An empty string removes its visible marker. It does not change implementation scope.
+
+Context handovers use `kind: "handover"` with `step add --input`. Pending checkpoints can be moved or removed with normal step commands. `next` returns `ready_handover_steps` separately from approved implementation; only approved, ready checkpoints appear, and the approved run authorizes their fresh tasks. The helper includes crossed checkpoints and the checkpoint immediately following the selected batch. The agent automatically applies a handover request and uses the transfer lifecycle at that point. See [Context handovers](handovers.md).

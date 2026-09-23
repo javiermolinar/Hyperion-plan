@@ -32,6 +32,7 @@
 #__PLAN_ROOT__ .pc-parallel-summary { margin:10px 0 0; color:var(--pc-muted); font-size:12px; }
 #__PLAN_ROOT__ .pc-interaction-hint { margin:9px 0 0; color:var(--pc-muted); font-size:12px; }
 #__PLAN_ROOT__ .pc-row-context { display:flex; flex-wrap:wrap; align-items:center; gap:5px 10px; margin:0 12px 9px 40px; font-size:12px; color:var(--pc-muted); }
+#__PLAN_ROOT__ .pc-row-context:empty { display:none; }
 #__PLAN_ROOT__ .pc-links { display:flex; align-items:center; flex-wrap:wrap; gap:2px 6px; min-width:0; }
 #__PLAN_ROOT__ .pc-step-link { background:transparent; border:0; border-radius:3px; padding:1px 0; color:var(--pc-muted); font-size:12px; text-align:left; text-decoration:underline; text-decoration-color:var(--pc-line); text-underline-offset:3px; }
 #__PLAN_ROOT__ .pc-step-link:hover { color:var(--hp-accent); text-decoration-color:var(--hp-accent); }
@@ -39,10 +40,7 @@
 #__PLAN_ROOT__ .pc-selection-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:6px; }
 #__PLAN_ROOT__ .pc-selection-summary { font-size:12px; color:var(--pc-muted); }
 #__PLAN_ROOT__ .pc-quiet { background:transparent; border:0; color:var(--pc-muted); padding:5px 6px; font-size:12px; }
-#__PLAN_ROOT__ .pc-next { margin:0 20px 16px; padding:14px; border:1px solid var(--pc-line); border-radius:9px; background:var(--pc-soft); }
-#__PLAN_ROOT__ .pc-next p { margin:5px 0 10px; font-size:12px; color:var(--pc-muted); }
-#__PLAN_ROOT__ .pc-next ul { padding-left:20px; margin:8px 0; }
-#__PLAN_ROOT__ .pc-next-actions { display:flex; flex-wrap:wrap; gap:8px; }
+#__PLAN_ROOT__ .pc-plan-actions { display:flex; flex-wrap:wrap; gap:4px 12px; margin:0 20px 8px; }
 #__PLAN_ROOT__ .pc-milestone { list-style:none; border-top:1px solid var(--pc-line); }
 #__PLAN_ROOT__ .pc-milestone > details > summary { cursor:pointer; padding:12px 10px; font-weight:500; }
 #__PLAN_ROOT__ .pc-milestone-progress { display:block; margin-left:16px; font-size:12px; color:var(--pc-muted); font-weight:400; }
@@ -57,14 +55,24 @@
 #__PLAN_ROOT__ .pc-drop-before { box-shadow:0 -2px 0 var(--hp-accent); }
 #__PLAN_ROOT__ .pc-drop-after { box-shadow:0 2px 0 var(--hp-accent); }
 #__PLAN_ROOT__ .pc-drop-invalid { outline:1px dashed var(--pc-danger); outline-offset:-1px; }
-#__PLAN_ROOT__ .pc-review-step { background:var(--hp-review); border-radius:8px; margin:5px 0; }
-#__PLAN_ROOT__ .pc-review-type { display:inline-flex; align-items:center; gap:5px; color:var(--hp-accent); }
+#__PLAN_ROOT__ .pc-review-step, #__PLAN_ROOT__ .pc-handover-step { background:var(--hp-review); border-radius:8px; margin:5px 0; }
+#__PLAN_ROOT__ .pc-handover-step { background:light-dark(#e8f1ef,#182d30); }
+#__PLAN_ROOT__ .pc-handover-step .pc-handover-type { color:light-dark(#326f68,#8bc9be); }
+#__PLAN_ROOT__ .pc-review-type, #__PLAN_ROOT__ .pc-handover-type { display:inline-flex; align-items:center; gap:5px; color:var(--hp-accent); }
 #__PLAN_ROOT__ .pc-checks { padding-left:20px; margin:6px 0 16px; }
 #__PLAN_ROOT__ .pc-checks li { margin:5px 0; }
 #__PLAN_ROOT__ .pc-review-controls { margin:12px 0; }
 #__PLAN_ROOT__ .pc-review-controls label { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:12px; }
 #__PLAN_ROOT__ select { font:inherit; max-width:100%; min-width:0; padding:6px 8px; border:1px solid var(--pc-line); border-radius:6px; color:var(--pc-fg); background:var(--pc-bg); }
 #__PLAN_ROOT__ .pc-review-controls select { flex:1; }
+#__PLAN_ROOT__ .pc-reasoning-label { position:relative; display:inline-flex; align-items:center; gap:5px; flex:none; padding:0; border-radius:6px; background:var(--pc-soft); color:var(--pc-muted); font-size:11px; }
+#__PLAN_ROOT__ .pc-reasoning-label svg { position:absolute; width:14px; height:14px; pointer-events:none; }
+#__PLAN_ROOT__ .pc-reasoning-label select { appearance:none; border:0; background:transparent; border-radius:0; padding:3px 24px 3px 27px; font-size:11px; color:inherit; }
+#__PLAN_ROOT__ .pc-reasoning-label svg:first-child { left:7px; }
+#__PLAN_ROOT__ .pc-reasoning-label svg:last-child { right:6px; }
+#__PLAN_ROOT__ .pc-reasoning-label:focus-within { outline:2px solid var(--hp-accent); outline-offset:2px; }
+#__PLAN_ROOT__ .pc-reasoning-label select option { background:var(--pc-bg); color:var(--pc-fg); }
+#__PLAN_ROOT__ .pc-expand-icon { border:0; padding:4px 0; background:transparent; color:var(--pc-muted); flex:none; }
 #__PLAN_ROOT__ .pc-review-controls summary { font-size:12px; color:var(--pc-muted); }
 #__PLAN_ROOT__ .pc-review-insert { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; }
 #__PLAN_ROOT__ .pc-review-insert label { display:flex; align-items:center; gap:8px; min-width:0; flex:1; font-size:12px; }
@@ -110,8 +118,6 @@
 #__PLAN_ROOT__ .pc-add-area { padding:11px 20px 12px; }
 #__PLAN_ROOT__ .pc-storage { margin:8px 0 0; color:var(--pc-muted); font-size:12px; }
 #__PLAN_ROOT__ .pc-settings > summary { color:var(--pc-muted); font-size:12px; margin:8px 0; }
-#__PLAN_ROOT__ .pc-inherited { margin:12px 0; font-size:12px; }
-#__PLAN_ROOT__ .pc-inherited p { white-space:pre-wrap; margin:4px 0 10px; }
 #__PLAN_ROOT__ .pc-add-type { margin:8px 0; }
 #__PLAN_ROOT__ .pc-add-toggle { padding-left:0; }
 #__PLAN_ROOT__ .pc-add { margin:8px 0; }
@@ -135,6 +141,12 @@
 @media(max-width:460px) { #__PLAN_ROOT__ .pc-head { padding:19px 16px 11px; } #__PLAN_ROOT__ .hp-brand { gap:9px; padding-bottom:15px; margin-bottom:15px; } #__PLAN_ROOT__ .hp-brand span { font-size:18px; letter-spacing:.11em; } #__PLAN_ROOT__ h2 { font-size:18px; } #__PLAN_ROOT__ .pc-steps { padding:0 6px; } #__PLAN_ROOT__ .pc-row-top { padding:8px; gap:8px; } #__PLAN_ROOT__ .pc-details { margin:6px 12px 14px 36px; } #__PLAN_ROOT__ .pc-add-area { padding:11px 16px 12px; } #__PLAN_ROOT__ .pc-footer { padding:13px 16px; } #__PLAN_ROOT__ .pc-submit-buttons { width:100%; } #__PLAN_ROOT__ .pc-implement { flex:1; } #__PLAN_ROOT__ .pc-menu { margin-left:12px; } }
 @media(max-width:460px) { #__PLAN_ROOT__ .pc-row-context { margin-left:36px; } }
 @media(pointer:coarse) { #__PLAN_ROOT__ button,#__PLAN_ROOT__ .pc-check { min-height:44px; } #__PLAN_ROOT__ .pc-check,#__PLAN_ROOT__ .pc-more,#__PLAN_ROOT__ .pc-drag { min-width:44px; } #__PLAN_ROOT__ .pc-row-top { gap:4px; } #__PLAN_ROOT__ input[type=text],#__PLAN_ROOT__ textarea { font-size:16px; } }
+@media (max-width:480px) {
+  #__PLAN_ROOT__ .pc-row-top { flex-wrap:wrap; }
+  #__PLAN_ROOT__ .pc-expand { flex:1 0 calc(100% - 112px); }
+  #__PLAN_ROOT__ .pc-reasoning-label { margin-left:auto; }
+}
+@media(pointer:coarse) { #__PLAN_ROOT__ .pc-reasoning-select { min-height:44px; } }
 </style>
 <section id="__PLAN_ROOT__" aria-label="Interactive task plan">
   <script type="application/json" class="pc-data">__PLAN_DATA__</script>
@@ -143,13 +155,13 @@
     <p class="pc-interaction-hint"></p>
     <div class="pc-selection-bar"><button type="button" class="pc-review-selection pc-quiet" hidden>Review selected steps</button><span class="pc-selection-summary" aria-live="polite">Choose steps to implement</span><button type="button" class="pc-quiet pc-select-all cursor-interaction">Select all</button></div>
   </header>
-  <div class="pc-next" aria-label="Next useful batch"></div>
+  <div class="pc-plan-actions" aria-label="Plan actions"></div>
   <ol id="__PLAN_ROOT__-list" class="pc-steps" aria-label="Plan steps"></ol>
   <div class="pc-add-area">
     <div class="pc-undo-line" hidden><span class="pc-undo-label"></span><button type="button" class="pc-quiet pc-undo cursor-interaction">Undo</button></div>
     <button type="button" class="pc-quiet pc-add-toggle cursor-interaction" aria-expanded="false" aria-controls="__PLAN_ROOT__-composer"><i data-lucide="plus" aria-hidden="true"></i>Add step</button>
     <div id="__PLAN_ROOT__-composer" class="pc-composer" hidden>
-      <label>Type <select class="pc-add-type" aria-label="Step type"><option value="implementation">Implementation</option><option value="review">Review implemented code</option></select></label>
+      <label>Type <select class="pc-add-type" aria-label="Step type"><option value="implementation">Implementation</option><option value="review">Review implemented code</option><option value="handover">Context handover</option></select></label>
       <div class="pc-review-insert" id="__PLAN_ROOT__-review-add" hidden><label>Run after <select class="pc-review-after" aria-label="Place new review after"></select></label><button type="button" class="pc-insert-review cursor-interaction">Add code review</button><span class="pc-label">Initially inspects this step; coverage can be changed in review settings.</span></div>
       <div id="__PLAN_ROOT__-add" class="pc-add" role="group" aria-label="Add a step">
       <label for="__PLAN_ROOT__-new-title">Step title</label><div class="pc-add-line"><input id="__PLAN_ROOT__-new-title" type="text" maxlength="200" placeholder="What else should the plan include?" required><button type="button" class="pc-add-button cursor-interaction">Add</button></div>

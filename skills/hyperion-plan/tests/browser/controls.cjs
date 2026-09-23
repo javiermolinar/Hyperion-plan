@@ -31,7 +31,7 @@ const errors=[];
     let calls=await frame.evaluate(()=>window.__calls),request=decode(calls[1]);
     assert.equal(request.intent,'implement');assert.deepEqual(request.selected_step_ids,['monorepo','api-client']);assert.deepEqual(request.operations,[]);
     assert.equal(decode(calls[0]).request_id,request.request_id);
-    assert.ok(calls[1].prompt.includes('ONLY the selected_step_ids'));
+    assert.ok(calls[1].prompt.includes('ONLY the selected work'));
     assert.equal(await ui.locator('.pc-done').count(),0,'Sending is not completion');
     await expand(ui,'api-client').click();
     const note=ui.getByRole('textbox',{name:'Note for: Define the shared API and TypeScript client',exact:true});

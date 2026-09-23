@@ -9,6 +9,7 @@ import {
   validate,
   applyOperations,
   prerequisites,
+  handoverBlocker,
   reorderPendingSteps,
   requireValue as require,
 } from "./model";
@@ -43,6 +44,7 @@ const editableFields = new Set([
   "depends_on",
   "checks",
   "run_after",
+  "reasoning_effort",
   "complexity",
   "complexity_reason",
   "estimated_files",
@@ -176,6 +178,9 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
   for (const step of plan.steps) {
     if (!selected.has(step.id) || step.status === "completed") continue;
     const reasons: string[] = [];
+    const boundary = handoverBlocker(plan.steps, step);
+    if (boundary) reasons.push(boundary);
+
     if (plan.lifecycle === "finished") reasons.push("Plan is finished; reopen it and select work before continuing");
     if (plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state))) reasons.push("Handover in progress; finish or cancel it before continuing work");
     if (refreshRequired)
@@ -197,7 +202,7 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
     if (reasons.length)
       blocked.push({ step, reasons, prerequisite_ids: missing });
     else if (step.status === "in_progress") inProgress.push(step);
-    else ready.push(step);
+    else if (step.kind !== "handover") ready.push(step);
   }
   return {
     plan_id: plan.plan_id,
@@ -207,6 +212,13 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
     ...(plan.execution_owner ? { execution_owner: plan.execution_owner } : {}),
     refresh_required: refreshRequired,
     ready_steps: ready,
+    ...(plan.steps.some(s => s.kind === "handover") ? {
+      ready_handover_steps: !refreshRequired && plan.lifecycle !== "finished" && execution?.state === "approved" &&
+        !plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state))
+        ? plan.steps.filter(s => s.kind === "handover" && selected.has(s.id) && s.status === "pending" &&
+          !s.blocked_by && s.review_state !== "needs_review" && !handoverBlocker(plan.steps, s) &&
+          prerequisites(s).every(id => byId.get(id)?.status === "completed")) : [],
+    } : {}),
     in_progress_steps: inProgress,
     blocked_steps: blocked,
     unselected_step_ids: plan.steps

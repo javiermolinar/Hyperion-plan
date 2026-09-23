@@ -14,7 +14,7 @@ function decode(call){return JSON.parse(call.prompt.split('Change request JSON:\
   await row(view.ui,'b').getByRole('textbox').fill('Preserve this note.');
   await action(view.ui,'r','Mark as pending');
   await row(view.ui,'r').locator('.pc-settings > summary').click();
-  assert.equal(await row(view.ui,'r').getByRole('combobox').count(),0);
+  assert.equal(await row(view.ui,'r').getByRole('combobox',{name:/^Run review after:/}).count(),0);
   assert.match(await row(view.ui,'r').textContent(),/Save the reopened review/);
   await row(view.ui,'c').locator('.pc-drag').press('ArrowUp');
   const saved=await view.frame.evaluate(()=>window.__savedState);

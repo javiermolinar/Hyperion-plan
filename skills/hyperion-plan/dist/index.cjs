@@ -1612,6 +1612,7 @@ var index_exports = {};
 __export(index_exports, {
   EXECUTION_STATES: () => EXECUTION_STATES,
   JsonNumber: () => JsonNumber,
+  REASONING_EFFORTS: () => REASONING_EFFORTS,
   SKILL: () => SKILL,
   STATUSES: () => STATUSES,
   applyOperations: () => applyOperations,
@@ -1631,6 +1632,7 @@ __export(index_exports, {
   editStep: () => editStep,
   equal: () => equal,
   floatJSON: () => floatJSON,
+  handoverBlocker: () => handoverBlocker,
   handoverBrief: () => handoverBrief,
   handoverDigest: () => handoverDigest,
   identifier: () => identifier,
@@ -1672,6 +1674,7 @@ __export(index_exports, {
   uuid5: () => uuid5,
   validate: () => validate,
   validateStepOrder: () => validateStepOrder,
+  withHandoverCheckpoints: () => withHandoverCheckpoints,
   withLock: () => withLock
 });
 module.exports = __toCommonJS(index_exports);
@@ -1721,6 +1724,7 @@ function parseJSON(text) {
 }
 
 // src/model.ts
+var REASONING_EFFORTS = ["inherit", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 var STATUSES = ["pending", "in_progress", "completed"];
 var EXECUTION_STATES = ["approved", "paused", "cancelled"];
 function requireValue(condition, message) {
@@ -1884,7 +1888,7 @@ function validate(value) {
     string(defaultValue(step.description, ""), "description", 4e3, true);
     string(defaultValue(step.done_when, ""), "done_when", 2e3, true);
     requireValue(
-      ["implementation", "review"].includes(
+      ["implementation", "review", "handover"].includes(
         defaultValue(step.kind, "implementation")
       ),
       "Invalid step kind"
@@ -1907,6 +1911,11 @@ function validate(value) {
       );
     }
     requireValue(STATUSES.includes(step.status), "Invalid step status");
+    if (step.kind === "handover" && step.status !== "pending")
+      requireValue(
+        plan.handovers?.some((h) => h.step_id === step.id && (step.status === "completed" ? h.state === "transferred" : ["requested", "prepared", "blocked"].includes(h.state))),
+        "Handover checkpoint status must match its transfer event"
+      );
     requireValue(
       step.completion_source == null || ["user", "agent"].includes(step.completion_source),
       "Invalid completion source"
@@ -1928,6 +1937,10 @@ function validate(value) {
         defaultValue(step.complexity, "unknown")
       ),
       "Invalid complexity"
+    );
+    requireValue(
+      step.reasoning_effort === void 0 || REASONING_EFFORTS.includes(step.reasoning_effort),
+      "Invalid reasoning effort"
     );
     string(
       defaultValue(step.complexity_reason, ""),
@@ -2014,7 +2027,7 @@ function validate(value) {
         );
       for (const target of step.depends_on) {
         requireValue(
-          byId.get(target).kind !== "review",
+          !["review", "handover"].includes(byId.get(target).kind ?? "implementation"),
           "Review scope must name implementation steps"
         );
         requireValue(
@@ -2084,7 +2097,37 @@ function invalidateDependents(plan, changedIds, reason) {
       s.review_note = reason;
     }
 }
-function checkReady(step, available, selected = []) {
+function withHandoverCheckpoints(steps, selected) {
+  if (!selected.length) return [];
+  if (!steps.some((s) => s.kind === "handover")) return [...selected];
+  const ids = new Set(selected);
+  const last = steps.reduce((index, step, i) => ids.has(step.id) ? i : index, -1);
+  for (const step of steps.slice(0, last + 1))
+    if (step.kind === "handover" && step.status !== "completed") ids.add(step.id);
+  const next = steps.slice(last + 1).find((s) => s.status !== "completed");
+  if (next?.kind === "handover" && next.status === "pending") {
+    try {
+      checkReady(next, Object.fromEntries(steps.map((s) => [s.id, s])), [...ids], steps);
+      ids.add(next.id);
+    } catch {
+    }
+  }
+  return [...steps.filter((s) => ids.has(s.id)).map((s) => s.id), ...selected.filter((id) => !steps.some((s) => s.id === id))];
+}
+function handoverBlocker(steps, step, selected = []) {
+  const before = steps.slice(0, steps.findIndex((s) => s.id === step.id));
+  for (const boundary of before.filter((s) => s.kind === "handover" && s.status !== "completed")) {
+    if (!selected.includes(boundary.id)) return `Automatic handover first: ${boundary.title}`;
+    if (boundary.blocked_by || boundary.review_state === "needs_review") return `Resolve handover checkpoint: ${boundary.title}`;
+    if (steps.slice(0, steps.indexOf(boundary)).some((s) => s.status !== "completed" && !selected.includes(s.id)))
+      return "Select preceding work to reach the automatic handover";
+  }
+  if (step.kind === "handover" && before.some((s) => s.status !== "completed" && !selected.includes(s.id)))
+    return "Complete or select the preceding steps before handing over";
+  return "";
+}
+function checkReady(step, available, selected = [], orderedSteps) {
+  if (orderedSteps) requireValue(!handoverBlocker(orderedSteps, step, selected), handoverBlocker(orderedSteps, step, selected));
   requireValue(
     defaultValue(step.review_state, "current") === "current",
     `Step needs review: ${step.id}`
@@ -2183,6 +2226,7 @@ function applyOperations(plan, operations) {
       for (const field of [
         "kind",
         "milestone",
+        "reasoning_effort",
         "depends_on",
         "checks",
         "run_after"
@@ -2242,11 +2286,15 @@ function applyOperations(plan, operations) {
       );
       result.steps.splice(result.steps.indexOf(step), 1);
       revoke(sid);
+    } else if (op.type === "set_reasoning_effort") {
+      requireValue(REASONING_EFFORTS.includes(op.reasoning_effort), "Invalid reasoning effort");
+      step.reasoning_effort = op.reasoning_effort;
     } else if (op.type === "set_handover_point") {
       const reason = string(op.reason, "handover point reason", 2e3, true);
       if (reason.trim()) step.handover_after = reason;
       else delete step.handover_after;
     } else if (op.type === "set_status") {
+      requireValue(step.kind !== "handover", "Handover checkpoints complete only when ownership transfers");
       requireValue(
         ["pending", "completed"].includes(op.status),
         "Invalid user completion status"
@@ -2325,7 +2373,8 @@ function stepFingerprint(step) {
         "review_state",
         "review_note",
         "milestone",
-        "handover_after"
+        "handover_after",
+        "reasoning_effort"
       ].includes(k)
     )
   );
@@ -2418,7 +2467,11 @@ function applyRequest(plan, value) {
     if (intent === "finish" || plan.lifecycle === "finished") delete result.execution;
   } else if (intent === "handover") {
     const step = targets.length && Object.hasOwn(available, targets[0]) ? available[targets[0]] : void 0;
-    requireValue(!targets.length || !!step && step.status !== "pending", "Locate a handover during active work or after a completed step");
+    if (step?.kind === "handover") {
+      requireValue(step.status === "pending", "Handover checkpoint already started or completed");
+      checkReady(step, available, [], result.steps);
+      step.status = "in_progress";
+    } else requireValue(!targets.length || !!step && step.status !== "pending", "Locate a handover during active work or after a completed step");
     result.handovers = [...result.handovers ?? [], {
       request_id: rid,
       revision: result.revision + 1,
@@ -2430,18 +2483,19 @@ function applyRequest(plan, value) {
     }];
   } else if (intent === "implement") {
     requireValue(!plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)), "Finish or cancel the active handover before implementing");
-    for (const sid of selected) {
+    const executionSelection = withHandoverCheckpoints(result.steps, selected);
+    for (const sid of executionSelection) {
       requireValue(Object.hasOwn(
         available,
         sid
       ), `Selected step is absent or removed: ${sid}`);
       requireValue(available[sid].status !== "completed", `Selected step is already completed: ${sid}`);
-      checkReady(available[sid], available, selected);
+      checkReady(available[sid], available, executionSelection, result.steps);
     }
     result.execution = {
       request_id: rid,
       state: "approved",
-      selected_step_ids: clone(selected)
+      selected_step_ids: clone(executionSelection)
     };
   } else if (independent) {
     requireValue(!result.plan_reviews?.some((r) => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
@@ -2513,6 +2567,10 @@ function revise(plan, replacement, revision) {
   for (const step of result.steps) {
     const old = Object.hasOwn(oldSteps, step.id) ? oldSteps[step.id] : void 0;
     if (!old) continue;
+    if (old.kind === "handover") {
+      requireValue(step.kind === "handover", "Preserve handover checkpoint type");
+      requireValue(step.status === old.status, "Handover checkpoints complete only when ownership transfers");
+    }
     if (old.kind === "review" && old.status !== "pending")
       for (const field of ["kind", "depends_on", "checks", "run_after"])
         requireValue(
@@ -2562,6 +2620,7 @@ function checkpoint(plan, revision, stepId, status, note, blockedBy, executionSt
       identifier(stepId)
     ), "Step is outside the recorded implementation scope");
     const step = result.steps.find((s) => s.id === stepId);
+    requireValue(step.kind !== "handover", "Use the handover lifecycle for checkpoints");
     if (blockedBy === "" || status === "completed") delete step.blocked_by;
     if (status != null) {
       requireValue(STATUSES.includes(status), "Invalid checkpoint status");
@@ -2570,7 +2629,9 @@ function checkpoint(plan, revision, stepId, status, note, blockedBy, executionSt
       if (status === "in_progress" || status === "completed")
         checkReady(
           step,
-          Object.fromEntries(result.steps.map((s) => [s.id, s]))
+          Object.fromEntries(result.steps.map((s) => [s.id, s])),
+          [],
+          result.steps
         );
       if (status === "completed") {
         string(note, "completion evidence", 2e3);
@@ -2641,6 +2702,7 @@ function summary(plan) {
     "progress_note",
     "blocked_by",
     "depends_on",
+    "reasoning_effort",
     "complexity",
     "complexity_reason",
     "size",
@@ -3414,6 +3476,8 @@ function quoteText(value) {
 }
 function contextLines(step) {
   const lines = [];
+  if (step.reasoning_effort)
+    lines.push("**Requested reasoning effort:** " + step.reasoning_effort + " (execution preference; model support must be checked).", "");
   for (const [label, field] of [
     ["Intent", "description"],
     ["Acceptance criteria", "done_when"]
@@ -3482,7 +3546,7 @@ function prNotes(plan) {
     ""
   ];
   for (const step of plan.steps) {
-    const kind = step.kind === "review" ? "review" : "implementation";
+    const kind = step.kind ?? "implementation";
     lines.push(
       `## Step \`${step.id}\` \u2014 ${kind} \xB7 ${step.status}`,
       "",
@@ -3803,6 +3867,7 @@ var editableFields = /* @__PURE__ */ new Set([
   "depends_on",
   "checks",
   "run_after",
+  "reasoning_effort",
   "complexity",
   "complexity_reason",
   "estimated_files",
@@ -3910,6 +3975,8 @@ function nextSteps(plan, refreshRequired = false) {
   for (const step of plan.steps) {
     if (!selected.has(step.id) || step.status === "completed") continue;
     const reasons = [];
+    const boundary = handoverBlocker(plan.steps, step);
+    if (boundary) reasons.push(boundary);
     if (plan.lifecycle === "finished") reasons.push("Plan is finished; reopen it and select work before continuing");
     if (plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state))) reasons.push("Handover in progress; finish or cancel it before continuing work");
     if (refreshRequired)
@@ -3931,7 +3998,7 @@ function nextSteps(plan, refreshRequired = false) {
     if (reasons.length)
       blocked.push({ step, reasons, prerequisite_ids: missing });
     else if (step.status === "in_progress") inProgress.push(step);
-    else ready.push(step);
+    else if (step.kind !== "handover") ready.push(step);
   }
   return {
     plan_id: plan.plan_id,
@@ -3941,6 +4008,9 @@ function nextSteps(plan, refreshRequired = false) {
     ...plan.execution_owner ? { execution_owner: plan.execution_owner } : {},
     refresh_required: refreshRequired,
     ready_steps: ready,
+    ...plan.steps.some((s) => s.kind === "handover") ? {
+      ready_handover_steps: !refreshRequired && plan.lifecycle !== "finished" && execution?.state === "approved" && !plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)) ? plan.steps.filter((s) => s.kind === "handover" && selected.has(s.id) && s.status === "pending" && !s.blocked_by && s.review_state !== "needs_review" && !handoverBlocker(plan.steps, s) && prerequisites(s).every((id) => byId.get(id)?.status === "completed")) : []
+    } : {},
     in_progress_steps: inProgress,
     blocked_steps: blocked,
     unselected_step_ids: plan.steps.filter((s) => s.status !== "completed" && !selected.has(s.id)).map((s) => s.id)
@@ -4024,6 +4094,8 @@ function updateHandover(plan, revision, value, taskId) {
     requireValue(handover.state === "prepared", "Prepare the handover before transferring ownership");
     requireValue(handover.context_digest === handoverDigest(plan), "Plan changed since preparation; refresh the handover brief before transferring");
     requireValue(Object.keys(value).every((k) => ["request_id", "state", "destination_task_id"].includes(k)), "Prepare context changes before transferring");
+    const checkpoint3 = result.steps.find((s) => s.id === handover.step_id && s.kind === "handover");
+    if (checkpoint3) checkReady(checkpoint3, Object.fromEntries(result.steps.map((s) => [s.id, s])), [], result.steps);
     const destination = identifier(value.destination_task_id ?? handover.destination_task_id);
     requireValue(destination !== actor, "Destination must be a fresh task");
     handover.destination_task_id = destination;
@@ -4036,6 +4108,21 @@ function updateHandover(plan, revision, value, taskId) {
     if (value.state === "prepared") handover.context_digest = handoverDigest(plan);
   }
   handover.state = value.state;
+  const checkpoint2 = result.steps.find((s) => s.id === handover.step_id && s.kind === "handover");
+  if (checkpoint2) {
+    if (value.state === "transferred") {
+      checkpoint2.status = "completed";
+      checkpoint2.completion_source = "agent";
+      checkpoint2.progress_note = `Ownership transferred to task ${handover.destination_task_id}.`;
+      checkpoint2.review_state = "current";
+      delete checkpoint2.blocked_by;
+      handover.context_digest = handoverDigest(result);
+    } else if (value.state === "cancelled") {
+      checkpoint2.status = "pending";
+      if (result.execution)
+        result.execution.selected_step_ids = result.execution.selected_step_ids.filter((id) => id !== checkpoint2.id);
+    }
+  }
   if (equal(result, plan)) return [result, false];
   result.revision++;
   return [validate(result), true];
@@ -4072,6 +4159,7 @@ function handoverBrief(plan, requestId) {
 0 && (module.exports = {
   EXECUTION_STATES,
   JsonNumber,
+  REASONING_EFFORTS,
   SKILL,
   STATUSES,
   applyOperations,
@@ -4091,6 +4179,7 @@ function handoverBrief(plan, requestId) {
   editStep,
   equal,
   floatJSON,
+  handoverBlocker,
   handoverBrief,
   handoverDigest,
   identifier,
@@ -4132,5 +4221,6 @@ function handoverBrief(plan, requestId) {
   uuid5,
   validate,
   validateStepOrder,
+  withHandoverCheckpoints,
   withLock
 });

@@ -45,6 +45,7 @@
   }
 
   // src/model.ts
+  var REASONING_EFFORTS = ["inherit", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   var STATUSES = ["pending", "in_progress", "completed"];
   var EXECUTION_STATES = ["approved", "paused", "cancelled"];
   function requireValue(condition, message) {
@@ -208,7 +209,7 @@
       string(defaultValue(step.description, ""), "description", 4e3, true);
       string(defaultValue(step.done_when, ""), "done_when", 2e3, true);
       requireValue(
-        ["implementation", "review"].includes(
+        ["implementation", "review", "handover"].includes(
           defaultValue(step.kind, "implementation")
         ),
         "Invalid step kind"
@@ -231,6 +232,11 @@
         );
       }
       requireValue(STATUSES.includes(step.status), "Invalid step status");
+      if (step.kind === "handover" && step.status !== "pending")
+        requireValue(
+          plan.handovers?.some((h) => h.step_id === step.id && (step.status === "completed" ? h.state === "transferred" : ["requested", "prepared", "blocked"].includes(h.state))),
+          "Handover checkpoint status must match its transfer event"
+        );
       requireValue(
         step.completion_source == null || ["user", "agent"].includes(step.completion_source),
         "Invalid completion source"
@@ -252,6 +258,10 @@
           defaultValue(step.complexity, "unknown")
         ),
         "Invalid complexity"
+      );
+      requireValue(
+        step.reasoning_effort === void 0 || REASONING_EFFORTS.includes(step.reasoning_effort),
+        "Invalid reasoning effort"
       );
       string(
         defaultValue(step.complexity_reason, ""),
@@ -338,7 +348,7 @@
           );
         for (const target of step.depends_on) {
           requireValue(
-            byId.get(target).kind !== "review",
+            !["review", "handover"].includes(byId.get(target).kind ?? "implementation"),
             "Review scope must name implementation steps"
           );
           requireValue(
@@ -398,6 +408,48 @@
         s.review_state = "needs_review";
         s.review_note = reason;
       }
+  }
+  function withHandoverCheckpoints(steps, selected) {
+    if (!selected.length) return [];
+    if (!steps.some((s) => s.kind === "handover")) return [...selected];
+    const ids = new Set(selected);
+    const last = steps.reduce((index, step, i) => ids.has(step.id) ? i : index, -1);
+    for (const step of steps.slice(0, last + 1))
+      if (step.kind === "handover" && step.status !== "completed") ids.add(step.id);
+    const next = steps.slice(last + 1).find((s) => s.status !== "completed");
+    if (next?.kind === "handover" && next.status === "pending") {
+      try {
+        checkReady(next, Object.fromEntries(steps.map((s) => [s.id, s])), [...ids], steps);
+        ids.add(next.id);
+      } catch {
+      }
+    }
+    return [...steps.filter((s) => ids.has(s.id)).map((s) => s.id), ...selected.filter((id) => !steps.some((s) => s.id === id))];
+  }
+  function handoverBlocker(steps, step, selected = []) {
+    const before = steps.slice(0, steps.findIndex((s) => s.id === step.id));
+    for (const boundary of before.filter((s) => s.kind === "handover" && s.status !== "completed")) {
+      if (!selected.includes(boundary.id)) return `Automatic handover first: ${boundary.title}`;
+      if (boundary.blocked_by || boundary.review_state === "needs_review") return `Resolve handover checkpoint: ${boundary.title}`;
+      if (steps.slice(0, steps.indexOf(boundary)).some((s) => s.status !== "completed" && !selected.includes(s.id)))
+        return "Select preceding work to reach the automatic handover";
+    }
+    if (step.kind === "handover" && before.some((s) => s.status !== "completed" && !selected.includes(s.id)))
+      return "Complete or select the preceding steps before handing over";
+    return "";
+  }
+  function checkReady(step, available, selected = [], orderedSteps) {
+    if (orderedSteps) requireValue(!handoverBlocker(orderedSteps, step, selected), handoverBlocker(orderedSteps, step, selected));
+    requireValue(
+      defaultValue(step.review_state, "current") === "current",
+      `Step needs review: ${step.id}`
+    );
+    requireValue(!step.blocked_by, `Step is blocked: ${step.id}`);
+    for (const dep of prerequisites(step))
+      requireValue(
+        available[dep].status === "completed" || selected.includes(dep),
+        `Missing prerequisite for ${step.id}: ${dep}`
+      );
   }
   function preserveProtectedOrder(original, steps) {
     const fixed = original.filter((s) => s.status !== "pending").map((s) => s.id);
@@ -486,6 +538,7 @@
         for (const field of [
           "kind",
           "milestone",
+          "reasoning_effort",
           "depends_on",
           "checks",
           "run_after"
@@ -545,11 +598,15 @@
         );
         result.steps.splice(result.steps.indexOf(step), 1);
         revoke(sid);
+      } else if (op.type === "set_reasoning_effort") {
+        requireValue(REASONING_EFFORTS.includes(op.reasoning_effort), "Invalid reasoning effort");
+        step.reasoning_effort = op.reasoning_effort;
       } else if (op.type === "set_handover_point") {
         const reason = string(op.reason, "handover point reason", 2e3, true);
         if (reason.trim()) step.handover_after = reason;
         else delete step.handover_after;
       } else if (op.type === "set_status") {
+        requireValue(step.kind !== "handover", "Handover checkpoints complete only when ownership transfers");
         requireValue(
           ["pending", "completed"].includes(op.status),
           "Invalid user completion status"
@@ -656,6 +713,8 @@
     const stepNumber = (id) => draft.findIndex((s) => s.id === id) + 1;
     const shortLabel = (step) => step.short_title || step.title;
     const isReview = (step) => step?.kind === "review";
+    const isHandover = (step) => step?.kind === "handover";
+    const isImplementation = (step) => !isReview(step) && !isHandover(step);
     const executionDeps = prerequisites;
     function dependsOn(id, target, seen = /* @__PURE__ */ new Set()) {
       if (id === target) return true;
@@ -669,7 +728,8 @@
       "Exercise relevant edge cases and failure paths.",
       "Inspect test coverage and independently run relevant checks."
     ];
-    function runLabel(ids = selection()) {
+    function runLabel(ids = runSelection()) {
+      if (ids.length && ids.every((id) => isHandover(byId(id)))) return "Continue plan";
       const count = ids.length, reviews = ids.filter((id) => isReview(byId(id))).length;
       return count ? reviews === count ? count === 1 ? "Review implemented code" : `Run ${count} code reviews` : reviews ? `Run ${count} steps` : `Implement ${count} ${count === 1 ? "step" : "steps"}` : draft.some(isReview) ? "Run selected" : "Implement selected";
     }
@@ -683,6 +743,7 @@
       target?.scrollIntoView({ block: "nearest" });
     }
     const complexityLabel = (step) => !step.complexity || step.complexity === "unknown" ? "Complexity not assessed" : step.complexity[0].toUpperCase() + step.complexity.slice(1) + " complexity";
+    const effortLabel = (value) => !value || value === "inherit" ? "Task default" : value[0].toUpperCase() + value.slice(1);
     function selectStep(id, checked, focusId) {
       if (checked) selected.add(id);
       else selected.delete(id);
@@ -759,6 +820,8 @@
       return "";
     }
     function blockReason(step, candidates = selected) {
+      const boundary = handoverBlocker(draft, step, withHandoverCheckpoints(draft, [...candidates, step.id]));
+      if (boundary) return boundary;
       if (reviewReason(step)) return "Needs plan review";
       if (step.blocked_by) return "Blocked: " + step.blocked_by;
       const missing = executionDeps(step).filter(
@@ -772,13 +835,20 @@
       const result = /* @__PURE__ */ new Set();
       for (let pass = 0; pass < draft.length; pass++)
         for (const step of draft)
-          if (step.status !== "completed" && candidates.has(step.id) && !blockReason(step, result))
+          if (step.status !== "completed" && !isHandover(step) && candidates.has(step.id) && !blockReason(step, result))
             result.add(step.id);
       return result;
     }
     function selection() {
       const valid = availableSelection(selected);
       return draft.filter((step) => valid.has(step.id)).map((step) => step.id);
+    }
+    function runSelection() {
+      const ids = selection();
+      if (ids.length) return ids;
+      const remaining = draft.filter((step) => step.status !== "completed");
+      const checkpoint = remaining[0];
+      return remaining.every(isHandover) && checkpoint?.status === "pending" && !blockReason(checkpoint) ? [checkpoint.id] : [];
     }
     function operations() {
       const ops = [], statusOps = [];
@@ -802,6 +872,7 @@
             done_when: step.done_when || ""
           };
           if (step.milestone !== void 0) op.milestone = step.milestone;
+          if (isHandover(step)) op.kind = "handover";
           if (isReview(step))
             Object.assign(op, {
               kind: "review",
@@ -826,6 +897,8 @@
               after_step_id: step.run_after
             });
         }
+        if ((step.reasoning_effort ?? "inherit") !== (old?.reasoning_effort ?? "inherit"))
+          ops.push({ type: "set_reasoning_effort", step_id: step.id, reasoning_effort: step.reasoning_effort ?? "inherit" });
         if ((step.handover_after ?? "") !== (old?.handover_after ?? ""))
           ops.push({ type: "set_handover_point", step_id: step.id, reason: step.handover_after ?? "" });
         if (!old && step.status !== "pending")
@@ -1111,16 +1184,6 @@
       const count = steps.filter((s) => selected.has(s.id)).length;
       return `${done}/${steps.length} complete${blocked ? ` \xB7 ${blocked} blocked or need plan review` : ""}${count ? ` \xB7 ${count} selected` : ""}`;
     }
-    function suggestedBatch() {
-      const ready = draft.filter((s) => s.status !== "completed" && !blockReason(s, /* @__PURE__ */ new Set()));
-      const first = ready.find((s) => s.status === "in_progress") || ready[0];
-      if (!first) return [];
-      if (isReview(first) || broad(first) || first.status === "in_progress") return [first];
-      const group = milestoneGroups().find((g) => g.steps.includes(first));
-      const remaining = group.steps.slice(group.steps.indexOf(first));
-      const reviewIndex = remaining.findIndex(isReview);
-      return remaining.slice(0, reviewIndex < 0 ? void 0 : reviewIndex).filter((s) => ready.includes(s) && !broad(s)).slice(0, 3);
-    }
     function handoverActive() {
       return !!base.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state));
     }
@@ -1128,7 +1191,7 @@
       let strip = root.querySelector(".pc-handovers");
       if (!strip) {
         strip = el("div", "pc-handovers");
-        q(".pc-next").before(strip);
+        q(".pc-plan-actions").before(strip);
       }
       strip.replaceChildren();
       for (const h of base.handovers ?? []) {
@@ -1155,10 +1218,12 @@
       const dialog = el("dialog", "pc-plan-review-dialog pc-handover-dialog");
       dialog.setAttribute("aria-label", "Continue in fresh task");
       const step = stepId ? byId(stepId) : draft.find((s) => s.status === "in_progress") ?? [...draft].reverse().find((s) => s.status === "completed");
+      if (isHandover(step) && (step.status !== "pending" || blockReason(step, /* @__PURE__ */ new Set()))) return;
+      if (isHandover(step) && handoverReason === "Continue in fresh context") handoverReason = step.description || "Continue in fresh context";
       dialog.append(
         el("h3", "", "Continue in fresh task"),
         el("p", "", "Keep this plan, working files, progress, and existing approvals. A fresh task receives a short handover brief and takes over execution."),
-        el("p", "", step ? `Handover ${step.status === "in_progress" ? "during" : "after"} \u201C${step.title}\u201D.` : "Handover between steps."),
+        el("p", "", step ? isHandover(step) ? `Checkpoint: ${step.title}` : `Handover ${step.status === "in_progress" ? "during" : "after"} \u201C${step.title}\u201D.` : "Handover between steps."),
         el("p", "", "This saves pending edits. Checked steps do not grant additional implementation approval.")
       );
       const label = el("label", "", "Reason");
@@ -1184,7 +1249,7 @@
       let strip = root.querySelector(".pc-plan-reviews");
       if (!strip) {
         strip = el("div", "pc-plan-reviews");
-        q(".pc-next").before(strip);
+        q(".pc-plan-actions").before(strip);
       }
       strip.replaceChildren();
       for (const review of base.plan_reviews ?? []) {
@@ -1264,62 +1329,34 @@
       root.append(dialog);
       dialog.showModal();
     }
-    function updateNextBatch() {
-      const panel = q(".pc-next");
+    function updatePlanActions() {
+      const panel = q(".pc-plan-actions");
       panel.replaceChildren();
       renderPlanReviews();
       renderHandovers();
       panel.hidden = finished || !draft.some((s) => s.status !== "completed");
       if (panel.hidden) return;
-      const batch = suggestedBatch();
-      panel.append(el("strong", "", batch.length && isReview(batch[0]) ? "Next: review implemented code" : "Next implementation batch"));
-      const items = el("ul");
-      for (const step of batch) {
-        const item = el("li");
-        item.append(btn(shortLabel(step), "pc-step-link", () => openStep(step.id)));
-        if (step.done_when) item.append(el("p", "", step.done_when));
-        items.append(item);
-      }
-      if (batch.length) panel.append(items);
-      panel.append(el("p", "", batch.length ? isReview(batch[0]) ? "The covered work is complete. This reviews the code against its acceptance criteria; fixes require their own selection." : `${batch[0].milestone ? batch[0].milestone + " \xB7 " : ""}Prerequisites are complete. ${batch.length > 1 ? "These steps can start independently. " : ""}Select this suggestion, then adjust the selection or run it below.` : "No work is ready to start. Review flagged plan assumptions or resolve the blockers shown below."));
-      const actions = el("div", "pc-next-actions");
-      if (batch.length) {
-        const select = btn("Select suggested batch", "pc-select-batch", () => {
-          selected = new Set(batch.map((s) => s.id));
-          for (const group of milestoneGroups())
-            if (group.steps.some((s) => selected.has(s.id))) milestones[group.key] = true;
-          requestIds.implement = null;
-          save();
-          render();
-          q(".pc-select-batch").focus();
-        });
-        select.disabled = !!sending;
-        actions.append(select);
-      }
-      const review = btn("Review plan", "pc-review-plan", () => openPlanReview());
+      const review = btn("Review plan", "pc-review-plan pc-quiet", () => openPlanReview());
       review.title = "Assess scope, sequencing, dependencies, and acceptance criteria without implementing or reviewing completed code.";
       review.disabled = !!sending;
-      actions.append(review);
-      const handover = btn("Continue in fresh task", "pc-handover", () => openHandover());
-      handover.disabled = !!sending || handoverActive();
-      actions.append(handover);
-      panel.append(actions);
+      panel.append(review);
     }
     function updateActions() {
-      updateNextBatch();
+      updatePlanActions();
       q(".pc-review-selection").hidden = finished || !selection().length;
       q(".pc-review-selection").disabled = !!sending;
-      const ids = selection(), ops = operations(), available = draft.filter((s) => s.status !== "completed").length;
-      q(".pc-selection-summary").textContent = ids.length ? `${ids.length} selected \xB7 ${available - ids.length} left for later` : available ? draft.some(isReview) ? "Choose steps to run" : "Choose steps to implement" : "All steps complete";
+      const ids = selection(), runIds = runSelection(), ops = operations(), available = draft.filter((s) => s.status !== "completed").length;
+      q(".pc-selection-summary").textContent = ids.length ? `${ids.length} selected \xB7 ${available - ids.length} left for later` : runIds.length ? "Ready to continue" : available ? draft.some(isReview) ? "Choose steps to run" : "Choose steps to implement" : "All steps complete";
       const selectable = availableSelection();
       const all = q(".pc-select-all");
       all.textContent = ids.length && ids.length === selectable.size ? "Clear selection" : selectable.size === available ? "Select all" : "Select available";
       all.disabled = !selectable.size || !!sending;
+      all.hidden = !selectable.size && !!runIds.length;
       const edited = new Set(
         ops.flatMap((op) => op.type === "reorder_steps" ? [] : [op.step_id])
       ).size;
       const hint = q(".pc-interaction-hint");
-      hint.hidden = !available;
+      hint.hidden = !available || !ids.length && !!runIds.length;
       hint.textContent = draft.some(canReorder) ? "Drag the grip to reorder pending tasks \xB7 Tick a checkbox to choose work" : "Tick a checkbox to choose work";
       q(".pc-scope").hidden = !edited;
       q(".pc-scope").textContent = edited ? `${edited} ${edited === 1 ? "step has" : "steps have"} unsaved edits` : ids.length ? "Only selected steps will run" : "Nothing selected";
@@ -1329,12 +1366,12 @@
       q(".pc-add-toggle").disabled = !!sending;
       q(".pc-add-button").disabled = !!sending;
       q(".pc-add-type").disabled = !!sending;
-      q('.pc-add-type option[value="review"]').disabled = !draft.some((s) => !isReview(s));
-      q(".pc-insert-review").disabled = !!sending || draft.length >= 30 || !draft.some((s) => !isReview(s));
+      q('.pc-add-type option[value="review"]').disabled = !draft.some(isImplementation);
+      q(".pc-insert-review").disabled = !!sending || draft.length >= 30 || !draft.some(isImplementation);
       q(".pc-storage").textContent = config.preview ? "Demo edits stay in this card; they are not written to the plan file." : edited ? "Unsaved draft \xB7 Save edits sends it to Codex for writing to disk." : ops.length ? "Order updated in this card \xB7 included with your next plan action." : `Saved plan \xB7 revision ${base.revision} \xB7 checks and notes kept in ${config.source_name || "the plan file"} and PR notes.`;
-      implement.disabled = !!sending || !ids.length || handoverActive();
+      implement.disabled = !!sending || !runIds.length || handoverActive();
       implement.title = handoverActive() ? "Finish or cancel the handover before continuing work." : "";
-      implement.textContent = sending === "implement" ? "Opening\u2026" : runLabel(ids);
+      implement.textContent = sending === "implement" ? "Opening\u2026" : runLabel(runIds);
       const large = ids.filter((id) => broad(byId(id)));
       q(".pc-large-warning").hidden = !large.length;
       q(".pc-decompose-selection").disabled = !!sending;
@@ -1354,7 +1391,7 @@
       }
     }
     function updateParallelSummary() {
-      const unfinished = draft.filter((s) => s.status !== "completed"), ready = unfinished.filter((s) => !blockReason(s, /* @__PURE__ */ new Set())).map((s) => "#" + stepNumber(s.id));
+      const unfinished = draft.filter((s) => s.status !== "completed"), ready = unfinished.filter((s) => !handoverBlocker(draft, s) && !blockReason(s, /* @__PURE__ */ new Set())).map((s) => "#" + stepNumber(s.id));
       q(".pc-parallel-summary").textContent = finished ? unfinished.length ? `${unfinished.length} unfinished ${unfinished.length === 1 ? "task kept" : "tasks kept"} in plan history` : "All steps complete" : ready.length > 1 ? `Parallel candidates: ${ready.join(", ")}` : ready.length ? `Available first: ${ready[0]}` : !unfinished.length ? "All steps complete" : unfinished.some((s) => reviewReason(s)) ? "Review flagged steps to unlock work" : "Resolve blockers before starting work";
     }
     function updateAvailability() {
@@ -1387,7 +1424,10 @@
           meta.append(el("span", "pc-review-label", "Needs plan review"));
         const context = q(".pc-row-context", row);
         context.querySelectorAll(".pc-row-action").forEach((action) => action.remove());
-        planningActions(context, step);
+        if (!isHandover(step)) planningActions(context, step);
+        if (isHandover(step) && step.status !== "completed") {
+          context.replaceChildren(el("span", "pc-automatic-handover", "Automatic when execution reaches this step"));
+        }
       }
     }
     function render() {
@@ -1402,7 +1442,7 @@
       updateActions();
       const afterSelect = q(".pc-review-after"), previousAfter = afterSelect.value;
       afterSelect.replaceChildren();
-      for (const step of draft.filter((s) => !isReview(s))) {
+      for (const step of draft.filter(isImplementation)) {
         const option = el(
           "option",
           "",
@@ -1411,7 +1451,7 @@
         option.value = step.id;
         afterSelect.append(option);
       }
-      afterSelect.value = byId(previousAfter) && !isReview(byId(previousAfter)) ? previousAfter : draft.filter((s) => !isReview(s)).at(-1)?.id || "";
+      afterSelect.value = byId(previousAfter) && !isReview(byId(previousAfter)) ? previousAfter : draft.filter(isImplementation).at(-1)?.id || "";
       const last = removed[removed.length - 1];
       q(".pc-undo-line").hidden = !last;
       q(".pc-undo-label").textContent = last ? `Removed \u201C${last.step.title}\u201D` : "";
@@ -1447,7 +1487,7 @@
         const original = base.steps.find((s) => s.id === step.id), isOpen = expanded.has(step.id), isDone = step.status === "completed";
         const row = el(
           "li",
-          "pc-row" + (isReview(step) ? " pc-review-step" : "") + (isDone ? " pc-done" : "") + (selected.has(step.id) ? " pc-selected" : "")
+          "pc-row" + (isReview(step) ? " pc-review-step" : isHandover(step) ? " pc-handover-step" : "") + (isDone ? " pc-done" : "") + (selected.has(step.id) ? " pc-selected" : "")
         );
         row.dataset.step = step.id;
         const top = el("div", "pc-row-top");
@@ -1501,7 +1541,12 @@
           done2.append(icon("circle-check"));
           done2.setAttribute("aria-label", "Completed");
           top.append(done2);
-        } else {
+        } else if (isHandover(step) && step.status === "in_progress") {
+          const marker = el("span", "pc-completed-icon");
+          marker.append(icon("loader-circle"));
+          marker.setAttribute("aria-label", "Handover in progress");
+          top.append(marker);
+        } else if (!isHandover(step)) {
           const label = el("label", "pc-check cursor-interaction"), check = el("input");
           check.type = "checkbox";
           check.id = root.id + "-select-" + step.id;
@@ -1543,7 +1588,11 @@
           el("span", "pc-title", `#${stepNumber(step.id)} ${step.title}`)
         );
         const meta = el("span", "pc-step-meta");
-        if (isReview(step)) {
+        if (isHandover(step)) {
+          const type = el("span", "pc-handover-type");
+          type.append(icon("arrow-right-left"), el("span", "", "Context handover \xB7 automatic"));
+          meta.append(type);
+        } else if (isReview(step)) {
           const type = el("span", "pc-review-type");
           type.append(
             icon("shield-check"),
@@ -1584,8 +1633,37 @@
         }
         const arrow = el("span", "pc-chevron");
         arrow.append(icon(isOpen ? "chevron-up" : "chevron-down"));
-        toggle.append(copy, arrow);
+        toggle.append(copy);
         top.append(toggle);
+        if (!isHandover(step)) {
+          const badge = el("span", "pc-reasoning-label");
+          badge.append(icon("brain"));
+          const effort = el("select", "pc-reasoning-select cursor-interaction");
+          effort.id = root.id + "-effort-" + step.id;
+          effort.setAttribute("aria-label", "Reasoning effort: " + step.title);
+          effort.disabled = !!sending || isDone || step.status === "in_progress";
+          for (const value of REASONING_EFFORTS) {
+            const option = el("option", "", effortLabel(value));
+            option.value = value;
+            option.selected = value === (step.reasoning_effort ?? "inherit");
+            effort.append(option);
+          }
+          effort.addEventListener("change", () => {
+            const value = effort.value;
+            mutate(() => {
+              step.reasoning_effort = value;
+            });
+            focus("effort-" + step.id);
+          });
+          badge.append(effort, icon("chevron-down"));
+          top.append(badge);
+        }
+        const expandIcon = btn("", "pc-expand-icon", () => toggle.click());
+        expandIcon.setAttribute("aria-label", toggle.getAttribute("aria-label"));
+        expandIcon.setAttribute("aria-expanded", String(isOpen));
+        expandIcon.setAttribute("aria-controls", root.id + "-details-" + step.id);
+        expandIcon.append(arrow);
+        top.append(expandIcon);
         const wrap = el("div", "pc-menu-wrap"), more = btn("", "pc-more", () => {
           menu = menu === step.id ? null : step.id;
           render();
@@ -1621,19 +1699,23 @@
           );
           actions.append(heading);
           const buttons = el("div", "pc-menu-buttons");
-          const point = btn(step.handover_after ? "Remove handover point" : "Mark handover point after this", "pc-mark-handover", () => {
-            menu = null;
-            mutate(() => {
-              if (step.handover_after) delete step.handover_after;
-              else step.handover_after = "A coherent batch ends here; consider continuing in fresh context.";
-            });
-          });
-          point.disabled = !!sending;
-          buttons.append(point);
-          if (step.status !== "pending") {
-            const handover = btn("Continue in fresh task", "pc-step-handover", () => openHandover(step.id));
-            handover.disabled = !!sending || handoverActive();
-            buttons.append(handover);
+          if (!isHandover(step)) {
+            const point = btn("Add handover checkpoint after this", "pc-add-handover", () => insertHandover(step.id));
+            point.disabled = !!sending || draft.length >= 30;
+            buttons.append(point);
+            if (step.handover_after) {
+              buttons.append(btn("Remove legacy handover marker", "pc-mark-handover", () => {
+                menu = null;
+                mutate(() => {
+                  delete step.handover_after;
+                });
+              }));
+            }
+            if (step.status !== "pending") {
+              const handover = btn("Continue in fresh task", "pc-step-handover", () => openHandover(step.id));
+              handover.disabled = !!sending || handoverActive();
+              buttons.append(handover);
+            }
           }
           if (canReorder(step)) {
             const index = draft.indexOf(step);
@@ -1646,7 +1728,7 @@
               buttons.append(move);
             }
           }
-          if (!isReview(step)) {
+          if (isImplementation(step)) {
             const insert = btn(
               "Add code review after this",
               "",
@@ -1685,7 +1767,9 @@
           });
           remove.prepend(icon("trash-2"));
           remove.disabled = dependents.length > 0 || historyStatus !== "pending";
-          buttons.append(status, remove);
+          if (!isHandover(step)) buttons.append(status);
+          else remove.id = root.id + "-menu-first-" + step.id;
+          buttons.append(remove);
           actions.append(buttons);
           actions.append(
             el(
@@ -1720,33 +1804,10 @@
           row.append(actions);
         }
         const context = el("div", "pc-row-context");
-        if (step.depends_on?.length) {
-          const links = el("span", "pc-links");
-          links.append(el("span", "", isReview(step) ? "Inspects" : "After"));
-          for (const id of step.depends_on) {
-            const dep = byId(id);
-            if (!dep) continue;
-            const link = btn(
-              `#${stepNumber(id)} ${shortLabel(dep)}`,
-              "pc-step-link",
-              () => openStep(id)
-            );
-            link.setAttribute("aria-label", "Show prerequisite: " + dep.title);
-            links.append(link);
-          }
-          context.append(links);
-        } else context.append(el("span", "", "No prerequisites"));
-        if (isReview(step) && step.run_after) {
-          const after = byId(step.run_after);
-          context.append(
-            el(
-              "span",
-              "",
-              `Runs after #${stepNumber(step.run_after)} ${after ? shortLabel(after) : step.run_after}`
-            )
-          );
+        if (!isHandover(step)) planningActions(context, step);
+        if (isHandover(step) && step.status !== "completed") {
+          context.replaceChildren(el("span", "pc-automatic-handover", "Automatic when execution reaches this step"));
         }
-        planningActions(context, step);
         row.append(context);
         const details = el("div", "pc-details");
         details.id = root.id + "-details-" + step.id;
@@ -1829,7 +1890,7 @@
                   `What to inspect \xB7 ${step.depends_on.length} ${step.depends_on.length === 1 ? "step" : "steps"}`
                 )
               );
-              for (const other of draft.slice(0, index).filter((s) => !isReview(s))) {
+              for (const other of draft.slice(0, index).filter(isImplementation)) {
                 const label2 = el("label", "cursor-interaction"), check = el("input");
                 check.type = "checkbox";
                 check.checked = step.depends_on.includes(other.id);
@@ -1864,29 +1925,6 @@
                 )
               );
             }
-            const inherited = el("div", "pc-inherited");
-            inherited.append(
-              el("span", "pc-label", "Reviewer context \xB7 included automatically")
-            );
-            for (const id of step.depends_on) {
-              const source = byId(id);
-              if (!source) continue;
-              inherited.append(el("p", "", `#${stepNumber(id)} ${source.title}`));
-              if (source.description)
-                inherited.append(el("p", "", source.description));
-              if (source.done_when)
-                inherited.append(el("p", "", "Acceptance: " + source.done_when));
-              for (const note of source.comments || []) {
-                inherited.append(el("p", "", "Note: " + note.text));
-                if (note.response)
-                  inherited.append(el("p", "", "Response: " + note.response));
-              }
-              if (notes.get(id)?.text.trim())
-                inherited.append(
-                  el("p", "", "Draft note: " + notes.get(id).text.trim())
-                );
-            }
-            extra.append(inherited);
           } else if (step.depends_on?.length) {
             details.append(el("span", "pc-label", "Prerequisites"));
             const deps = el("ul", "pc-dependencies");
@@ -1972,7 +2010,7 @@
           label.htmlFor = text.id;
           text.rows = 2;
           text.maxLength = 1e3;
-          text.placeholder = "Add a constraint, question, or change\u2026";
+          text.placeholder = isReview(step) ? "Add a note for the reviewer\u2026" : "Add a constraint, question, or change\u2026";
           text.setAttribute("aria-label", "Note for: " + step.title);
           text.value = notes.get(step.id)?.text || "";
           text.disabled = !!sending;
@@ -1982,7 +2020,7 @@
             "Enter saves edits \xB7 Command+Enter adds a line"
           );
           shortcut.id = text.id + "-shortcut";
-          text.setAttribute("aria-describedby", shortcut.id);
+          if (!isReview(step)) text.setAttribute("aria-describedby", shortcut.id);
           text.setAttribute("aria-keyshortcuts", "Enter Meta+Enter");
           text.addEventListener("keydown", (event) => {
             if (event.key !== "Enter" || event.isComposing || event.keyCode === 229)
@@ -2022,7 +2060,8 @@
             if (draft.some((s, index) => reviewReason(s) !== previousReasons[index]))
               updateAvailability();
           });
-          editor.append(label, text, shortcut);
+          if (isReview(step)) editor.append(text);
+          else editor.append(label, text, shortcut);
           extra.append(editor);
         }
         row.append(details);
@@ -2043,7 +2082,7 @@
       }
       if (finished) {
         for (const control of root.querySelectorAll("button,input,textarea,select"))
-          if (!control.matches(".pc-expand,.pc-step-link,.pc-lifecycle")) control.disabled = true;
+          if (!control.matches(".pc-expand,.pc-expand-icon,.pc-step-link,.pc-lifecycle")) control.disabled = true;
       }
       if (globalThis.lucide)
         globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } });
@@ -2104,8 +2143,27 @@
       "change",
       updateAddType
     );
+    function insertHandover(after) {
+      if (sending || draft.length >= 30 || !byId(after)) return;
+      const step = {
+        id: uid(),
+        kind: "handover",
+        title: "Continue in fresh context",
+        description: "Carry forward decisions and verified progress before starting the next phase.",
+        done_when: "A fresh task has verified the handover and taken ownership of this plan.",
+        status: "pending",
+        comments: [],
+        ...byId(after)?.milestone ? { milestone: byId(after).milestone } : {}
+      };
+      menu = null;
+      if (mutate(() => {
+        draft.splice(draft.findIndex((s) => s.id === after) + 1, 0, step);
+        revealMilestone(step.id);
+      }))
+        focus("expand-" + step.id);
+    }
     function insertReview(after) {
-      if (sending || draft.length >= 30 || !byId(after) || isReview(byId(after)))
+      if (sending || draft.length >= 30 || !byId(after) || !isImplementation(byId(after)))
         return;
       const step = {
         id: uid(),
@@ -2154,6 +2212,7 @@
       const step = {
         id: uid(),
         title: title.value.trim(),
+        ...q(".pc-add-type").value === "handover" ? { kind: "handover" } : {},
         description: description.value.trim(),
         done_when: "",
         status: "pending",
@@ -2171,7 +2230,7 @@
           "aria-expanded",
           "false"
         );
-        focus("select-" + step.id);
+        focus((isHandover(step) ? "expand-" : "select-") + step.id);
       }
     }
     q(".pc-add-button").addEventListener("click", addStep);
@@ -2206,7 +2265,7 @@
     async function submit(intent, targets = [], reviewMode) {
       const lifecycleAction = intent === "finish" || intent === "reopen";
       if (finished && intent !== "reopen") return;
-      const ops = intent === "reopen" ? [] : operations(), ids = selection(), planning = ["review", "decompose", "replan"].includes(intent);
+      const ops = intent === "reopen" ? [] : operations(), ids = intent === "implement" ? runSelection() : selection(), planning = ["review", "decompose", "replan"].includes(intent);
       if (sending || !lifecycleAction && intent !== "handover" && (intent === "edit" ? !ops.some((op) => op.type !== "reorder_steps") : planning ? !targets.length : !ids.length))
         return;
       try {
@@ -2245,7 +2304,7 @@
         request.review_mode = reviewMode;
         request.review_focus = reviewFocus;
       }
-      const instruction = intent === "handover" ? "Apply this handover request, then follow references/handovers.md. Prepare a concise brief and launch one fresh Codex task on the same working checkout and canonical plan (the user explicitly requests this). Do not fork conversation history or create another plan. Initially the destination must only verify the handover and report ready. Record source and destination task IDs, observed code state, work so far, and next action. Transfer ownership through the helper before sending the destination a follow-up to continue only existing approved scope. Preserve the interrupted step's in_progress status. Reuse recorded tasks on retries. After transfer, stop implementation in this source task and link the destination. Do not claim to have avoided compaction if it already happened." : reviewMode === "independent" ? "Apply this request first, then follow references/plan-review.md to launch one independent plan review in a fresh Codex task. Review requirements, architecture, completeness, sequencing, and acceptance criteria for target_step_ids against relevant code. Reuse an existing task on retry. The reviewer must return findings only: no new Hyperion plan, canonical-plan edits, implementation, or recursive reviews. Reconcile findings into the existing plan, recording applied, not adopted with reasons, or needs your input. Preserve completed history and implementation authorization boundaries. Show the refreshed plan." : intent === "finish" ? "Apply the included draft edits and finish this plan through the helper. Preserve every task's actual status and notes; unfinished tasks remain unfinished. Clear implementation approval. Confirm briefly in text and do not render another card. Keep this plan quiet on future follow-ups unless the user explicitly asks to show or reopen it." : intent === "reopen" ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection." : intent === "implement" ? "Apply the included plan edits, then implement ONLY the selected_step_ids listed below in prerequisite order. Keep unselected steps for later. Selection is not completion. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward." : intent === "decompose" ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation." : intent === "review" ? "Apply the included edits, then review the plan for target_step_ids and their prerequisites: assess scope, sequencing, dependencies, and acceptance criteria against current code. This is a plan review, not an implemented-code review. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation." : "Revise the plan and acknowledge notes; this request does not start implementation. Refresh the interactive card afterward.";
+      const instruction = intent === "handover" ? "Apply this handover request, then follow references/handovers.md. Prepare a concise brief and launch one fresh Codex task on the same working checkout and canonical plan (the user explicitly requests this). Do not fork conversation history or create another plan. Initially the destination must only verify the handover and report ready. Record source and destination task IDs, observed code state, work so far, and next action. Transfer ownership through the helper before sending the destination a follow-up to continue only existing approved scope. For an ordinary interrupted step, preserve its in_progress status. A kind=handover checkpoint completes only when ownership is transferred through the helper. Reuse recorded tasks on retries. After transfer, stop implementation in this source task and link the destination. Do not claim to have avoided compaction if it already happened." : reviewMode === "independent" ? "Apply this request first, then follow references/plan-review.md to launch one independent plan review in a fresh Codex task. Review requirements, architecture, completeness, sequencing, and acceptance criteria for target_step_ids against relevant code. Reuse an existing task on retry. The reviewer must return findings only: no new Hyperion plan, canonical-plan edits, implementation, or recursive reviews. Reconcile findings into the existing plan, recording applied, not adopted with reasons, or needs your input. Preserve completed history and implementation authorization boundaries. Show the refreshed plan." : intent === "finish" ? "Apply the included draft edits and finish this plan through the helper. Preserve every task's actual status and notes; unfinished tasks remain unfinished. Clear implementation approval. Confirm briefly in text and do not render another card. Keep this plan quiet on future follow-ups unless the user explicitly asks to show or reopen it." : intent === "reopen" ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection." : intent === "implement" ? "Apply the included plan edits, then implement ONLY the selected work in plan order. This run also explicitly requests fresh Codex tasks at the automatic handover checkpoints included by the helper in execution.selected_step_ids. When next reports a ready_handover_steps entry, immediately apply a handover request for that checkpoint and follow references/handovers.md without another confirmation. Prepare the brief, create one fresh task on the same checkout, verify readiness, transfer ownership, and continue the remaining approved scope there. Stop execution in the source after transfer. Do not bypass a checkpoint or start unselected implementation work. Keep other unselected steps for later. Honor each step\u2019s reasoning_effort where the execution interface supports it; inherit keeps the task setting. Check model support and disclose unavailable overrides; saved preferences do not change a running turn. Selection is not completion. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward." : intent === "decompose" ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation." : intent === "review" ? "Apply the included edits, then review the plan for target_step_ids and their prerequisites: assess scope, sequencing, dependencies, and acceptance criteria against current code. This is a plan review, not an implemented-code review. Update assumptions, dependencies, and estimates as needed; clear freshness warnings only with evidence. Preserve completed history. Show the revised plan; this request does not start implementation." : "Revise the plan and acknowledge notes; this request does not start implementation. Refresh the interactive card afterward.";
       const reviewInstruction = intent === "implement" ? ' Steps with kind="review" are independent reviews: export their review brief including covered step descriptions, acceptance criteria, and notes, and create a fresh Codex task with that brief and the scoped code snapshot; follow references/review-checks.md. Honor run_after as timing and depends_on as inspected scope. Follow list order among ready selected steps. Review selection does not authorize fixes.' : intent === "replan" ? " Replan dependencies of the target_step_ids so a later removal can be considered. Identify every dependent by name, including run_after references and review coverage. Rewire only when the actual requirements support it; otherwise explain the concrete decision needed. Preserve the target, completed history, and active work. Do not delete steps, revert code, or start implementation. Clear affected freshness warnings only after checking the revised plan." : "";
       const prompt = "Use $hyperion-plan. Read the skill at " + config.skill_path + ".\nPlan file: " + config.plan_path + "\nAdapt explanations and necessary questions to the user\u2019s demonstrated familiarity with this task. Short messages alone do not imply low expertise. For unfamiliar users, clarify functional goals and explain architectural tradeoffs in plain language; do not repeat resolved questions.\n" + instruction + reviewInstruction + "\nBefore mutations, check execution_owner. Supply --task-id with your actual task ID if required. If another task owns the plan, direct the user to it instead of impersonating its ID.\n\nChange request JSON:\n" + JSON.stringify(request, null, 2);
       sending = intent;

@@ -11,6 +11,8 @@ export interface Note {
   response?: string;
   [key: string]: unknown;
 }
+export const REASONING_EFFORTS = ["inherit", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 export interface Step {
   id: string;
   title: string;
@@ -21,7 +23,7 @@ export interface Step {
   short_title?: string;
   milestone?: string;
   handover_after?: string;
-  kind?: "implementation" | "review";
+  kind?: "implementation" | "review" | "handover";
   checks?: string[];
   depends_on?: string[];
   run_after?: string;
@@ -31,6 +33,7 @@ export interface Step {
   size?: "S" | "M" | "L" | "XL" | "unknown";
   complexity?: "low" | "moderate" | "high" | "unknown";
   complexity_reason?: string;
+  reasoning_effort?: ReasoningEffort;
   estimated_files?: number | null;
   estimate_note?: string;
   scope_warning?: string;
@@ -97,11 +100,13 @@ export type Operation =
       done_when?: string;
       kind?: Step["kind"];
       milestone?: string;
+      reasoning_effort?: ReasoningEffort;
       depends_on?: string[];
       checks?: string[];
       run_after?: string;
       after_step_id?: string;
     }
+  | { type: "set_reasoning_effort"; step_id: string; reasoning_effort: ReasoningEffort }
   | { type: "set_handover_point"; step_id: string; reason: string }
   | { type: "remove_step"; step_id: string }
   | { type: "reorder_steps"; step_ids: string[] }
@@ -310,7 +315,7 @@ export function validate(value: unknown): Plan {
     string(defaultValue(step.description, ""), "description", 4000, true);
     string(defaultValue(step.done_when, ""), "done_when", 2000, true);
     requireValue(
-      ["implementation", "review"].includes(
+      ["implementation", "review", "handover"].includes(
         defaultValue(step.kind, "implementation"),
       ),
       "Invalid step kind",
@@ -333,6 +338,10 @@ export function validate(value: unknown): Plan {
       );
     }
     requireValue(STATUSES.includes(step.status), "Invalid step status");
+    if (step.kind === "handover" && step.status !== "pending")
+      requireValue(plan.handovers?.some(h => h.step_id === step.id &&
+        (step.status === "completed" ? h.state === "transferred" : ["requested", "prepared", "blocked"].includes(h.state))),
+        "Handover checkpoint status must match its transfer event");
     requireValue(
       step.completion_source == null ||
         ["user", "agent"].includes(step.completion_source),
@@ -355,6 +364,10 @@ export function validate(value: unknown): Plan {
         defaultValue(step.complexity, "unknown"),
       ),
       "Invalid complexity",
+    );
+    requireValue(
+      step.reasoning_effort === undefined || REASONING_EFFORTS.includes(step.reasoning_effort),
+      "Invalid reasoning effort",
     );
     string(
       defaultValue(step.complexity_reason, ""),
@@ -447,7 +460,7 @@ export function validate(value: unknown): Plan {
         );
       for (const target of step.depends_on!) {
         requireValue(
-          byId.get(target)!.kind !== "review",
+          !["review", "handover"].includes(byId.get(target)!.kind ?? "implementation"),
           "Review scope must name implementation steps",
         );
         requireValue(
@@ -529,11 +542,47 @@ export function invalidateDependents(
       s.review_note = reason;
     }
 }
+/** Include phase boundaries crossed by a run and the boundary immediately following it. */
+export function withHandoverCheckpoints(steps: Step[], selected: string[]): string[] {
+  if (!selected.length) return [];
+  if (!steps.some(s => s.kind === "handover")) return [...selected];
+  const ids = new Set(selected);
+  const last = steps.reduce((index, step, i) => ids.has(step.id) ? i : index, -1);
+  for (const step of steps.slice(0, last + 1))
+    if (step.kind === "handover" && step.status !== "completed") ids.add(step.id);
+  const next = steps.slice(last + 1).find(s => s.status !== "completed");
+  if (next?.kind === "handover" && next.status === "pending") {
+    // A trailing boundary is optional: partial runs must remain executable.
+    try {
+      checkReady(next, Object.fromEntries(steps.map(s => [s.id, s])), [...ids], steps);
+      ids.add(next.id);
+    } catch {
+      // Leave an unreachable, blocked, or stale checkpoint for a later run.
+    }
+  }
+  // Retain unknown IDs so normal selection validation rejects them.
+  return [...steps.filter(s => ids.has(s.id)).map(s => s.id), ...selected.filter(id => !steps.some(s => s.id === id))];
+}
+/** Selection can span an authorized boundary; execution must wait for actual transfer. */
+export function handoverBlocker(steps: Step[], step: Step, selected: string[] = []): string {
+  const before = steps.slice(0, steps.findIndex(s => s.id === step.id));
+  for (const boundary of before.filter(s => s.kind === "handover" && s.status !== "completed")) {
+    if (!selected.includes(boundary.id)) return `Automatic handover first: ${boundary.title}`;
+    if (boundary.blocked_by || boundary.review_state === "needs_review") return `Resolve handover checkpoint: ${boundary.title}`;
+    if (steps.slice(0, steps.indexOf(boundary)).some(s => s.status !== "completed" && !selected.includes(s.id)))
+      return "Select preceding work to reach the automatic handover";
+  }
+  if (step.kind === "handover" && before.some(s => s.status !== "completed" && !selected.includes(s.id)))
+    return "Complete or select the preceding steps before handing over";
+  return "";
+}
 export function checkReady(
   step: Step,
   available: Record<string, Step>,
   selected: string[] = [],
+  orderedSteps?: Step[],
 ): void {
+  if (orderedSteps) requireValue(!handoverBlocker(orderedSteps, step, selected), handoverBlocker(orderedSteps, step, selected));
   requireValue(
     defaultValue(step.review_state, "current") === "current",
     `Step needs review: ${step.id}`,
@@ -647,6 +696,7 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
       for (const field of [
         "kind",
         "milestone",
+        "reasoning_effort",
         "depends_on",
         "checks",
         "run_after",
@@ -709,11 +759,15 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
       );
       result.steps.splice(result.steps.indexOf(step), 1);
       revoke(sid);
+    } else if (op.type === "set_reasoning_effort") {
+      requireValue(REASONING_EFFORTS.includes(op.reasoning_effort), "Invalid reasoning effort");
+      step.reasoning_effort = op.reasoning_effort;
     } else if (op.type === "set_handover_point") {
       const reason = string(op.reason, "handover point reason", 2000, true);
       if (reason.trim()) step.handover_after = reason;
       else delete step.handover_after;
     } else if (op.type === "set_status") {
+      requireValue(step.kind !== "handover", "Handover checkpoints complete only when ownership transfers");
       requireValue(
         ["pending", "completed"].includes(op.status),
         "Invalid user completion status",

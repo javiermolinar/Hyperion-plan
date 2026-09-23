@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Plan, Handover, validate, clone, equal, record, identifier, canonicalJSON, requireValue as require } from "./model";
+import { Plan, Handover, checkReady, validate, clone, equal, record, identifier, canonicalJSON, requireValue as require } from "./model";
 
 export function handoverDigest(plan: Plan): string {
   // Administrative handover writes must not stale their own captured context.
@@ -32,6 +32,8 @@ export function updateHandover(plan: Plan, revision: number, value: unknown, tas
     require(handover.state === "prepared", "Prepare the handover before transferring ownership");
     require(handover.context_digest === handoverDigest(plan), "Plan changed since preparation; refresh the handover brief before transferring");
     require(Object.keys(value).every(k => ["request_id", "state", "destination_task_id"].includes(k)), "Prepare context changes before transferring");
+    const checkpoint = result.steps.find(s => s.id === handover.step_id && s.kind === "handover");
+    if (checkpoint) checkReady(checkpoint, Object.fromEntries(result.steps.map(s => [s.id, s])), [], result.steps);
     const destination = identifier(value.destination_task_id ?? handover.destination_task_id);
     require(destination !== actor, "Destination must be a fresh task");
     handover.destination_task_id = destination;
@@ -44,6 +46,21 @@ export function updateHandover(plan: Plan, revision: number, value: unknown, tas
     if (value.state === "prepared") handover.context_digest = handoverDigest(plan);
   }
   handover.state = value.state as Handover["state"];
+  const checkpoint = result.steps.find(s => s.id === handover.step_id && s.kind === "handover");
+  if (checkpoint) {
+    if (value.state === "transferred") {
+      checkpoint.status = "completed";
+      checkpoint.completion_source = "agent";
+      checkpoint.progress_note = `Ownership transferred to task ${handover.destination_task_id}.`;
+      checkpoint.review_state = "current";
+      delete checkpoint.blocked_by;
+      handover.context_digest = handoverDigest(result);
+    } else if (value.state === "cancelled") {
+      checkpoint.status = "pending";
+      if (result.execution)
+        result.execution.selected_step_ids = result.execution.selected_step_ids.filter(id => id !== checkpoint.id);
+    }
+  }
   if (equal(result, plan)) return [result, false];
   result.revision++;
   return [validate(result), true];

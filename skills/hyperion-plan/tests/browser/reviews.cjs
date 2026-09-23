@@ -45,8 +45,8 @@ try{
   await review.locator('.pc-check input').check();assert.equal(await s.ui.locator('.pc-implement').textContent(),'Review implemented code');await s.ui.locator('.pc-implement').click();
   const call=await s.frame.evaluate(()=>window.__calls.at(-1));assert.match(call.prompt,/covered step descriptions/);assert.match(call.prompt,/run_after as timing/);assert.deepEqual(decode(call).selected_step_ids,['review-selection']);
   await review.locator('.pc-check input').uncheck();await review.locator('.pc-settings > summary').click();
-  assert.match(await review.locator('.pc-inherited').textContent(),/Only|Run only/);assert.match(await review.locator('.pc-inherited').textContent(),/Keyboard users/);
-  const position=review.getByRole('combobox');assert.equal(await position.locator('option[value="selection"]').evaluate(e=>e.disabled),true);
+  assert.equal(await review.locator(".pc-inherited").count(),0);
+  const position=review.getByRole('combobox',{name:/^Run review after:/});assert.equal(await position.locator('option[value="selection"]').evaluate(e=>e.disabled),true);
   await position.selectOption('polish');
   assert.equal(await review.locator('.pc-settings').evaluate(e=>e.open),true);
   assert.equal(await review.locator('.pc-check input').isDisabled(),true,'Unselected scheduling prerequisite blocks execution');

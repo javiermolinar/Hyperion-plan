@@ -67,3 +67,11 @@ The helper regenerates `<plan-stem>-pr-notes.md` after saves. `review-brief` exp
 ## Context handover metadata
 
 Step metadata may include `handover_after`, an advisory reason to consider a fresh task after that step. It is independent of prerequisites and approval. Plan metadata stores durable `handovers` events and optional `execution_owner`. Use the `handover` command and [handover protocol](handovers.md) to maintain these records; do not edit them to invent ownership, rewrite past events, or grant approval.
+
+## Reasoning effort
+
+A step comment can include `"reasoning_effort":"high"`. Omission or `"inherit"` uses the task setting; other accepted values are `none`, `minimal`, `low`, `medium`, `xhigh`, `max`, and `ultra`. These are requested execution preferences, not a claim of model support or the effort actually used. They survive Markdown round trips and appear in CLI inspection, review briefs, and PR context exports. The card submits changes as `set_reasoning_effort` operations with `step_id` and `reasoning_effort`; `add_step` also accepts this field.
+
+## Context handover checkpoints
+
+Set `"kind":"handover"` in a step comment, with the handover reason in its description. Its position separates phases: preceding steps must finish and later work waits for ownership transfer. The helper maintains status from actual handover events; manual completion is rejected. Ordinary dependencies still apply. Legacy `handover_after` markers remain advisory and are not automatically converted into checkpoints.

@@ -21,7 +21,7 @@ const decode=c=>JSON.parse(c.prompt.split('Change request JSON:\n')[1]);
  await retry.ui.locator('.pc-review-plan').click();await retry.ui.locator('.pc-independent-review').click();
  assert.equal(await retry.ui.locator('.pc-plan-review-focus').inputValue(),'Challenge rollback');
  await retry.ui.locator('.pc-start-plan-review').click();assert.equal(decode((await retry.frame.evaluate(()=>window.__calls)).at(-1)).request_id,first.request_id);
- await retry.ui.locator('.pc-select-batch').click();await retry.ui.locator('.pc-review-selection').click();await retry.ui.locator('.pc-independent-review').click();
+ await retry.ui.locator('[data-step="next"] .pc-check input').check();await retry.ui.locator('.pc-review-selection').click();await retry.ui.locator('.pc-independent-review').click();
  assert.equal(await retry.ui.locator('.pc-plan-review-scope').inputValue(),'selected');
  await retry.ui.locator('.pc-start-plan-review').click();assert.deepEqual(decode((await retry.frame.evaluate(()=>window.__calls)).at(-1)).target_step_ids,['next']);
  const running=await createView(browser,errors,dir,{file:'running.html'});await running.ui.locator('.pc-review-plan').click();assert.equal(await running.ui.locator('.pc-independent-review').isDisabled(),true);

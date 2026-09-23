@@ -46,6 +46,8 @@ export function quoteText(value: string): string {
 }
 export function contextLines(step: Step): string[] {
   const lines: string[] = [];
+  if (step.reasoning_effort)
+    lines.push("**Requested reasoning effort:** " + step.reasoning_effort + " (execution preference; model support must be checked).", "");
   for (const [label, field] of [
     ["Intent", "description"],
     ["Acceptance criteria", "done_when"],
@@ -114,7 +116,7 @@ export function prNotes(plan: Plan): string {
     "",
   ];
   for (const step of plan.steps) {
-    const kind = step.kind === "review" ? "review" : "implementation";
+    const kind = step.kind ?? "implementation";
     lines.push(
       `## Step \`${step.id}\` — ${kind} · ${step.status}`,
       "",

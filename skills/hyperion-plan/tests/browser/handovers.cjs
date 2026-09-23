@@ -12,31 +12,31 @@ const decode=call=>JSON.parse(call.prompt.split('Change request JSON:\n')[1]);
  const v=await createView(browser,errors,dir,{file:'active.html'});
  assert.equal(await v.ui.locator('.pc-handover-point').count(),1);
  // A marker is only a draft edit; it does not launch a task or alter selection.
- await v.ui.locator('[data-step="active"] .pc-more').click();await v.ui.locator('[data-step="active"] .pc-mark-handover').click();
- assert.equal(await v.ui.locator('.pc-handover-point').count(),2);
+ await v.ui.locator('[data-step="active"] .pc-more').click();await v.ui.locator('[data-step="active"] .pc-add-handover').click();
+ assert.equal(await v.ui.locator('.pc-handover-step').count(),1);
  assert.equal(await v.frame.evaluate(()=>window.__calls.length),0);
  await v.ui.locator('[data-step="active"] input[type=checkbox]').check();
- await v.ui.locator('.pc-handover').click();assert.match(await v.ui.locator('.pc-handover-dialog').textContent(),/during “Implement migration”/);
+ await v.ui.locator('[data-step="active"] .pc-more').click();await v.ui.locator('[data-step="active"] .pc-step-handover').click();assert.match(await v.ui.locator('.pc-handover-dialog').textContent(),/during “Implement migration”/);
  await v.ui.locator('.pc-handover-reason').fill('Context pressure midway through migration');
  await v.frame.evaluate(()=>window.__fail=true);await v.ui.locator('.pc-start-handover').click();
  const firstCall=(await v.frame.evaluate(()=>window.__calls)).at(-1),first=decode(firstCall);
  assert.equal(first.intent,'handover');assert.deepEqual(first.target_step_ids,['active']);assert.equal(first.selected_step_ids,undefined);
- assert.equal(first.operations.find(o=>o.type==='set_handover_point').step_id,'active');assert.match(firstCall.prompt,/same working checkout/);
+ assert.equal(first.operations.find(o=>o.type==='add_step').kind,'handover');assert.match(firstCall.prompt,/same working checkout/);
  const saved=await v.frame.evaluate(()=>window.__saved);
  const retry=await createView(browser,errors,dir,{file:'active.html',saved});
- await retry.ui.locator('.pc-handover').click();assert.equal(await retry.ui.locator('.pc-handover-reason').inputValue(),first.handover_reason);
+ await retry.ui.locator('[data-step="active"] .pc-more').click();await retry.ui.locator('[data-step="active"] .pc-step-handover').click();assert.equal(await retry.ui.locator('.pc-handover-reason').inputValue(),first.handover_reason);
  await retry.ui.locator('.pc-start-handover').click();assert.equal(decode((await retry.frame.evaluate(()=>window.__calls)).at(-1)).request_id,first.request_id);
  // Apply exact submitted request through the real CLI, then render observed state.
  const input=path.join(dir,'request.json');fs.writeFileSync(input,JSON.stringify(first));execFileSync(process.execPath,[helper,'apply','--plan',canonical,'--request',input]);
  let current=api.read(canonical);assert.equal(current.steps[1].status,'in_progress');assert.deepEqual(current.execution,plan.execution);
  render('requested',current);
- const requested=await createView(browser,errors,dir,{file:'requested.html'});assert.equal(await requested.ui.locator('.pc-handover').isDisabled(),true);
+ const requested=await createView(browser,errors,dir,{file:'requested.html'});assert.equal(await requested.ui.locator('.pc-checkpoint-handover').count(),0);
  await requested.ui.locator('[data-step="active"] input[type=checkbox]').check();assert.equal(await requested.ui.locator('.pc-implement').isDisabled(),true);
  [current]=api.updateHandover(current,current.revision,{request_id:first.request_id,state:'prepared',brief_path:path.join(dir,'brief.md'),summary:'Migration logic written; validation pending.',next_action:'Run rollback tests.',code_state:'Checkout /repo, HEAD abc123; local migration.ts edits; unit tests passed.'},'source');
  [current]=api.updateHandover(current,current.revision,{request_id:first.request_id,state:'transferred',destination_task_id:'destination'},'source');
  render('transferred',current);const [finished]=api.setLifecycle(current,current.revision,'finished');render('finished',finished);
  const f=await createView(browser,errors,dir,{file:'finished.html'});assert.equal(await f.ui.locator('.pc-handover-event').count(),1);assert.equal(await f.ui.locator('.pc-handover').count(),0);
- const preview=await createView(browser,errors,dir,{file:'preview.html'});await preview.ui.locator('.pc-handover').click();await preview.ui.locator('.pc-start-handover').click();assert.equal(await preview.frame.evaluate(()=>window.__calls.length),0);
+ const preview=await createView(browser,errors,dir,{file:'preview.html'});await preview.ui.locator('[data-step="active"] .pc-more').click();await preview.ui.locator('[data-step="active"] .pc-step-handover').click();await preview.ui.locator('.pc-start-handover').click();assert.equal(await preview.frame.evaluate(()=>window.__calls.length),0);
  for(const [width,theme] of [[736,'light'],[320,'dark']]){
   const result=await createView(browser,errors,dir,{file:'transferred.html',width,theme});
   await result.ui.locator('.pc-handover-event summary').click();
@@ -45,7 +45,7 @@ const decode=call=>JSON.parse(call.prompt.split('Change request JSON:\n')[1]);
   assert.equal(await result.ui.getByRole('link',{name:'Continue in task'}).getAttribute('href'),'codex://threads/destination');
   assert.equal(await result.frame.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
   await result.page.screenshot({path:`/tmp/hyperion-handover-event-${width}-${theme}.png`});
-  await result.ui.locator('.pc-handover').click();
+  await result.ui.locator('[data-step="active"] .pc-more').click();await result.ui.locator('[data-step="active"] .pc-step-handover').click();
   assert.equal(await result.ui.locator('.pc-handover-dialog').evaluate(e=>e.scrollWidth>e.clientWidth),false);
   await result.page.screenshot({path:`/tmp/hyperion-handover-dialog-${width}-${theme}.png`});
  }
