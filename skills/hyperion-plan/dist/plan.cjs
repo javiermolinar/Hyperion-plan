@@ -1871,6 +1871,7 @@ function validate(value) {
       step.reasoning_effort === void 0 || REASONING_EFFORTS.includes(step.reasoning_effort),
       "Invalid reasoning effort"
     );
+    requireValue(step.parallel_group === void 0 || Number.isSafeInteger(step.parallel_group) && step.parallel_group > 0 && step.parallel_group <= 30 && !["review", "handover"].includes(step.kind ?? "implementation"), "Invalid parallel group");
     string(
       defaultValue(step.complexity_reason, ""),
       "complexity rationale",
@@ -1965,6 +1966,22 @@ function validate(value) {
         );
       }
     }
+  for (const step of steps) {
+    if (!step.parallel_group) continue;
+    const ancestors = /* @__PURE__ */ new Set();
+    const collect = (id) => {
+      for (const dep of graph.get(id)) if (!ancestors.has(dep)) {
+        ancestors.add(dep);
+        collect(dep);
+      }
+    };
+    collect(step.id);
+    requireValue(![...ancestors].some((id) => byId.get(id).parallel_group === step.parallel_group), "Parallel group contains dependent steps");
+    const members = steps.filter((s) => s.parallel_group === step.parallel_group);
+    const first = Math.min(...members.map((s) => positions.get(s.id)));
+    const last = Math.max(...members.map((s) => positions.get(s.id)));
+    requireValue(!steps.slice(first, last + 1).some((s) => s.kind === "review" || s.kind === "handover"), "Parallel group crosses a review or handover");
+  }
   const receipts = defaultValue(plan.applied_requests, {});
   requireValue(record(receipts), "Invalid request receipts");
   for (const [key, v] of Object.entries(receipts)) {
@@ -1984,6 +2001,10 @@ function validate(value) {
     requireValue(
       EXECUTION_STATES.includes(execution.state),
       "Invalid execution state"
+    );
+    requireValue(
+      execution.execution_mode === void 0 || ["auto", "sequential", "parallel"].includes(execution.execution_mode),
+      "Invalid execution mode"
     );
     const selected = execution.selected_step_ids;
     requireValue(
@@ -2303,7 +2324,8 @@ function stepFingerprint(step) {
         "review_note",
         "milestone",
         "handover_after",
-        "reasoning_effort"
+        "reasoning_effort",
+        "parallel_group"
       ].includes(k)
     )
   );
@@ -2344,13 +2366,18 @@ function applyRequest(plan, value) {
   }
   requireValue(Number.isSafeInteger(request.base_revision) && request.base_revision === plan.revision, `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
   const operations = request.operations, intent = request.intent === void 0 ? "edit" : request.intent;
-  requireValue(["edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
+  requireValue(["ask", "edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
     intent
   ), "Invalid request intent");
   requireValue(Array.isArray(operations) && operations.length <= 100, "Expected at most 100 operations");
+  requireValue(
+    request.execution_mode === void 0 || intent === "implement" && ["auto", "sequential", "parallel"].includes(request.execution_mode),
+    "Execution mode is only valid on an implementation request and must be auto, sequential, or parallel"
+  );
   requireValue(request.review_mode === void 0 || intent === "review" && ["refresh", "independent"].includes(request.review_mode), "Invalid review mode");
   requireValue(request.review_focus === void 0 || intent === "review" && request.review_mode === "independent" && typeof request.review_focus === "string" && request.review_focus.length <= 2e3, "Invalid review focus");
   requireValue(request.handover_reason === void 0 || intent === "handover" && typeof request.handover_reason === "string" && request.handover_reason.trim().length > 0 && request.handover_reason.length <= 2e3, "Invalid handover reason");
+  requireValue(request.question === void 0 || intent === "ask" && typeof request.question === "string" && request.question.trim().length > 0 && request.question.length <= 1e3, "Invalid step question");
   const independent = intent === "review" && request.review_mode === "independent";
   const selected = request.selected_step_ids === void 0 ? [] : request.selected_step_ids, targets = request.target_step_ids === void 0 ? [] : request.target_step_ids;
   requireValue(Array.isArray(selected), "Invalid implementation selection");
@@ -2360,6 +2387,10 @@ function applyRequest(plan, value) {
     requireValue(!selected.length && !targets.length, "A lifecycle request cannot select or authorize work");
     if (intent === "reopen") requireValue(!operations.length, "Reopen the plan before submitting edits");
     if (plan.lifecycle === "finished") requireValue(!operations.length, "Reopen this finished plan before changing work");
+  } else if (intent === "ask") {
+    requireValue(!operations.length && !selected.length && targets.length === 1 && typeof request.question === "string" && !!request.question.trim(), "Ask requires one step and a question, without edits or implementation selection");
+    identifier(targets[0]);
+    requireValue(plan.steps.some((s) => s.id === targets[0]), "Question target is absent");
   } else if (intent === "handover") {
     requireValue(!selected.length && targets.length <= 1, "A handover cannot authorize work and may locate at most one step");
     targets.forEach(identifier);
@@ -2377,7 +2408,7 @@ function applyRequest(plan, value) {
     selected.forEach(identifier);
     requireValue(new Set(selected).size === selected.length, "Duplicate selected step");
   }
-  if (!["review", "decompose", "replan", "handover"].includes(intent))
+  if (!["ask", "review", "decompose", "replan", "handover"].includes(intent))
     requireValue(!targets.length, "Unexpected planning targets");
   const result = applyOperations(plan, operations), available = Object.fromEntries(result.steps.map((s) => [s.id, s]));
   for (const previous of plan.steps) {
@@ -2424,7 +2455,8 @@ function applyRequest(plan, value) {
     result.execution = {
       request_id: rid,
       state: "approved",
-      selected_step_ids: clone(executionSelection)
+      selected_step_ids: clone(executionSelection),
+      ...request.execution_mode !== void 0 ? { execution_mode: request.execution_mode } : {}
     };
   } else if (independent) {
     requireValue(!result.plan_reviews?.some((r) => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
@@ -2460,7 +2492,7 @@ function applyRequest(plan, value) {
       "A prerequisite is being reviewed or decomposed."
     );
   }
-  result.revision++;
+  if (intent !== "ask") result.revision++;
   result.applied_requests = {
     ...result.applied_requests ?? {},
     [rid]: digest
@@ -2632,6 +2664,7 @@ function summary(plan) {
     "blocked_by",
     "depends_on",
     "reasoning_effort",
+    "parallel_group",
     "complexity",
     "complexity_reason",
     "size",
@@ -2688,6 +2721,7 @@ var editableFields = /* @__PURE__ */ new Set([
   "checks",
   "run_after",
   "reasoning_effort",
+  "parallel_group",
   "complexity",
   "complexity_reason",
   "estimated_files",
@@ -2820,11 +2854,15 @@ function nextSteps(plan, refreshRequired = false) {
     else if (step.status === "in_progress") inProgress.push(step);
     else if (step.kind !== "handover") ready.push(step);
   }
+  const barrier = plan.steps.findIndex((s) => selected.has(s.id) && s.status !== "completed" && (s.kind === "review" || s.kind === "handover"));
+  const candidates = ["auto", "parallel"].includes(execution?.execution_mode ?? "sequential") ? ready.filter((s) => s.kind !== "review" && (barrier < 0 || plan.steps.indexOf(s) < barrier)) : [];
   return {
     plan_id: plan.plan_id,
     revision: plan.revision,
     lifecycle: plan.lifecycle ?? "active",
     execution_state: execution?.state ?? "unapproved",
+    execution_mode: execution?.execution_mode ?? "sequential",
+    parallel_candidates: candidates,
     ...plan.execution_owner ? { execution_owner: plan.execution_owner } : {},
     refresh_required: refreshRequired,
     ready_steps: ready,
@@ -3790,6 +3828,7 @@ function quoteText(value) {
 }
 function contextLines(step) {
   const lines = [];
+  if (step.parallel_group) lines.push("**Parallel group:** " + step.parallel_group + " (model-assessed; verify independence before dispatch).", "");
   if (step.reasoning_effort)
     lines.push("**Requested reasoning effort:** " + step.reasoning_effort + " (execution preference; model support must be checked).", "");
   for (const [label, field] of [

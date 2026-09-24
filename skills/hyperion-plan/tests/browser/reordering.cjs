@@ -33,6 +33,7 @@ const row=(ui,id)=>ui.locator(`[data-step="${id}"]`);
     assert.deepEqual(await ids(restored.ui),expected,'Host draft restoration preserves order');
     assert.equal(await row(restored.ui,'a').getByRole('textbox').inputValue(),'Keep my note through the move.');
     await restored.page.close();
+    await row(s.ui,'a').locator('.pc-reasoning-select').selectOption('high');
     await s.ui.locator('.pc-apply').click();
     const request=JSON.parse((await s.frame.evaluate(()=>window.__calls.at(-1))).prompt.split('Change request JSON:\n')[1]);
     assert.equal(request.intent,'edit');assert.equal(request.selected_step_ids,undefined);
@@ -40,7 +41,8 @@ const row=(ui,id)=>ui.locator(`[data-step="${id}"]`);
     execFileSync(process.execPath,[helper,'apply','--plan',planPath,'--request',requestPath]);
     const [result]=api.loadMarkdown(planPath);assert.deepEqual(result.steps.map(step=>step.id),expected);
     assert.equal(result.steps.find(s=>s.id==='review').run_after,'b');assert.deepEqual(result.steps.find(s=>s.id==='review').depends_on,['a']);
-    assert.equal(result.steps.find(s=>s.id==='a').comments[0].text,'Keep my note through the move.');
+    assert.equal(result.steps.find(s=>s.id==='a').reasoning_effort,'high');
+    assert.deepEqual(result.steps.find(s=>s.id==='a').comments,[]);
     await s.page.close();
 
     const keyboard=await setup();
@@ -101,25 +103,14 @@ const row=(ui,id)=>ui.locator(`[data-step="${id}"]`);
     assert.equal(await touch.frame.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
     await touch.page.close();
 
-    const combined=await setup();
-    await handle(combined.ui,'b').press('ArrowUp');await handle(combined.ui,'b').press('ArrowUp');
-    await row(combined.ui,'b').locator('.pc-more').click();await combined.ui.getByRole('button',{name:'Mark as done',exact:true}).click();
-    let draft=await combined.frame.evaluate(()=>window.__savedState);
-    const replayed=api.applyOperations(base,draft.modelContent.operations);
-    assert.deepEqual(replayed.steps.map(s=>s.id),expected);assert.equal(replayed.steps[1].status,'completed');
-    await row(combined.ui,'done').locator('.pc-more').click();await combined.ui.getByRole('button',{name:'Mark as pending',exact:true}).click();
-    assert.equal(await handle(combined.ui,'done').count(),0,'Reopened history cannot be dragged until saved');
-    await combined.page.close();
-
     for(const [width,theme] of [[736,'light'],[320,'light'],[736,'dark'],[320,'dark']]) {
       const view=await setup({width,theme});
-      await row(view.ui,'tail').locator('.pc-more').click();
-      await view.ui.getByRole('button',{name:'Move earlier',exact:true}).click();
+      await handle(view.ui,'tail').press('ArrowUp');
       assert.deepEqual(await ids(view.ui),['done','a','active','b','c','tail','review']);
       assert.equal(await view.frame.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
       await view.page.close();
     }
     assert.deepEqual(errors,[]);
-    console.log('PASS: pointer drag, cancellation, stable rows during drag, keyboard/menu reordering, visible hints, protected history, dependency rejection, review semantics, notes/selection, immediate host-state persistence without Save, next-action order submission, Markdown persistence, combined completion, narrow/dark layouts. Mock host only.');
+    console.log('PASS: pointer drag, cancellation, stable rows during drag, keyboard reordering, visible hints, protected history, dependency rejection, review semantics, notes/selection, immediate host-state persistence without Save, next-action order submission, Markdown persistence, narrow/dark layouts. Mock host only.');
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

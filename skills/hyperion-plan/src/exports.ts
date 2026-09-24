@@ -46,6 +46,7 @@ export function quoteText(value: string): string {
 }
 export function contextLines(step: Step): string[] {
   const lines: string[] = [];
+  if (step.parallel_group) lines.push("**Parallel group:** " + step.parallel_group + " (model-assessed; verify independence before dispatch).", "");
   if (step.reasoning_effort)
     lines.push("**Requested reasoning effort:** " + step.reasoning_effort + " (execution preference; model support must be checked).", "");
   for (const [label, field] of [

@@ -13,23 +13,24 @@ function apply(request){const input=path.join(dir,'request.json');fs.writeFileSy
  const active=await createView(browser,errors,dir,{file:'active.html',expanded:['pending']});
  assert.equal(await active.ui.locator('.pc-lifecycle').isEnabled(),true);
  await active.ui.locator('[data-step="pending"] input[type=checkbox]').check();
- await active.ui.getByRole('textbox',{name:'Note for: pending'}).fill('Keep my final note.');
+ await active.ui.getByRole('textbox',{name:'Ask Codex about: pending'}).fill('Keep my final note.');
+ await active.ui.locator('[data-step="pending"] .pc-reasoning-select').selectOption('high');
  await active.ui.locator('[data-step="pending"] .pc-drag').press('ArrowDown');
  assert.equal(await active.ui.locator('.pc-lifecycle').textContent(),'Save & finish plan');
  await active.frame.evaluate(()=>window.__fail=true);
  await active.ui.locator('.pc-lifecycle').click();
  const firstCall=await active.frame.evaluate(()=>window.__calls.at(-1)),first=decode(firstCall);
  assert.equal(first.intent,'finish');assert.equal(first.selected_step_ids,undefined);
- assert.ok(first.operations.some(op=>op.type==='add_comment'));assert.ok(first.operations.some(op=>op.type==='reorder_steps'));
+ assert.ok(first.operations.some(op=>op.type==='set_reasoning_effort'));assert.ok(first.operations.some(op=>op.type==='reorder_steps'));
  assert.match(firstCall.prompt,/do not render another card/);assert.match(await active.ui.locator('.pc-status').textContent(),/not confirmed/);
  const saved=await active.frame.evaluate(()=>window.__savedState);
  const retry=await createView(browser,errors,dir,{file:'active.html',saved});
- assert.equal(await retry.ui.getByRole('textbox',{name:'Note for: pending'}).inputValue(),'Keep my final note.');
+ assert.equal(await retry.ui.getByRole('textbox',{name:'Ask Codex about: pending'}).inputValue(),'Keep my final note.');
  await retry.ui.locator('.pc-lifecycle').click();
  const request=decode(await retry.frame.evaluate(()=>window.__calls.at(-1)));
  assert.deepEqual(request,first);assert.equal(api.read(p).lifecycle,undefined,'Host call alone does not close disk state');
  assert.equal(apply(request).lifecycle,'finished');assert.equal(apply(request).result,'already_applied');
- const closed=api.read(p);assert.equal(closed.execution,undefined);assert.deepEqual(closed.steps.map(s=>[s.id,s.status]),[['done','completed'],['spare','pending'],['pending','pending']]);assert.equal(closed.steps[2].comments[0].text,'Keep my final note.');
+ const closed=api.read(p);assert.equal(closed.execution,undefined);assert.deepEqual(closed.steps.map(s=>[s.id,s.status]),[['done','completed'],['spare','pending'],['pending','pending']]);assert.equal(closed.steps[2].reasoning_effort,'high');assert.deepEqual(closed.steps[2].comments,[]);
  await active.page.close();await retry.page.close();render('finished.html');
 
  let reopenRequest;
@@ -38,9 +39,9 @@ function apply(request){const input=path.join(dir,'request.json');fs.writeFileSy
   assert.equal(await finished.ui.locator('.pc-kind').textContent(),'Finished plan');
   assert.equal(await finished.ui.locator('.pc-lifecycle').textContent(),'Reopen plan');
   assert.equal(await finished.ui.locator('.pc-implement').isVisible(),false);assert.equal(await finished.ui.locator('.pc-add-area').isVisible(),false);
-  assert.equal(await finished.ui.locator('[data-step="pending"] .pc-more').isDisabled(),true);
+  assert.equal(await finished.ui.locator('[data-step="pending"] textarea').isDisabled(),true);
   assert.equal(await finished.ui.locator('[data-step="pending"] input[type=checkbox]').isDisabled(),true);
-  assert.match(await finished.ui.locator('[data-step="pending"] .pc-details').textContent(),/Keep my final note/);
+  assert.equal(await finished.ui.locator('[data-step="pending"] .pc-reasoning-select').inputValue(),'high');
   assert.equal(await finished.frame.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
   assert.ok(await finished.ui.locator('.pc-lifecycle').isEnabled());
   if(width===736 && theme==='light'){

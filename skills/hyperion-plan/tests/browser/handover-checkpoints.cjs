@@ -50,13 +50,12 @@ const decode=c=>JSON.parse(c.prompt.split('Change request JSON:\n')[1]);
  // Moving a pending boundary relocates it; removing it is an edit, never execution.
  await blocked.ui.locator('[data-step="boundary"] .pc-drag').press('ArrowDown');
  assert.deepEqual(await blocked.ui.locator('.pc-row').evaluateAll(es=>es.map(e=>e.dataset.step)),['phase-one','phase-two','boundary']);
- await blocked.ui.locator('[data-step="boundary"] .pc-more').click();await blocked.ui.locator('[data-step="boundary"] .pc-remove').click();
- assert.equal(await blocked.ui.locator('.pc-handover-step').count(),0);
- await blocked.ui.locator('.pc-undo').click();assert.equal(await blocked.ui.locator('.pc-handover-step').count(),1);
- await blocked.ui.locator('[data-step="phase-two"] .pc-more').click();await blocked.ui.locator('[data-step="phase-two"] .pc-add-handover').click();
- assert.equal(await blocked.ui.locator('.pc-handover-step').count(),2);
- await blocked.ui.locator('.pc-apply').click();const edits=decode((await blocked.frame.evaluate(()=>window.__calls)).at(-1));
- assert.equal(edits.intent,'edit');assert.ok(edits.operations.some(o=>o.type==='add_step'&&o.kind==='handover'));
+ await blocked.ui.locator('[data-step="boundary"] .pc-expand').click();
+ await blocked.ui.locator('[data-step="boundary"] textarea').fill('Remove this checkpoint');
+ await blocked.ui.locator('[data-step="boundary"] .pc-ask-codex').click();
+ const edits=decode((await blocked.frame.evaluate(()=>window.__calls)).at(-1));
+ assert.equal(edits.intent,'ask');assert.deepEqual(edits.operations,[]);
+ assert.deepEqual(edits.target_step_ids,['boundary']);
  // A cancelled terminal checkpoint can be reauthorized through the existing run button.
  let terminal=a.initialize({title:'Final handover',steps:[
   {id:'done',title:'Finished work',status:'completed'},
@@ -69,7 +68,7 @@ const decode=c=>JSON.parse(c.prompt.split('Change request JSON:\n')[1]);
  [terminal]=a.updateHandover(terminal,terminal.revision,{request_id:'terminal-handover',state:'cancelled',note:'Retry later'},'source');
  render('terminal-retry.html',terminal);
  const terminalView=await createView(browser,errors,dir,{file:'terminal-retry.html'});
- assert.equal(await terminalView.ui.locator('input[type=checkbox]').count(),0);
+ assert.equal(await terminalView.ui.locator('.pc-steps input[type=checkbox]').count(),0);
  assert.equal(await terminalView.ui.locator('.pc-implement').textContent(),'Continue plan');
  await terminalView.frame.evaluate(()=>window.__fail=true);
  await terminalView.ui.locator('.pc-implement').click();
@@ -98,5 +97,5 @@ const decode=c=>JSON.parse(c.prompt.split('Change request JSON:\n')[1]);
   assert.equal(await view.frame.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false);
   await view.ui.locator('section').screenshot({path:`/tmp/hyperion-checkpoint-${width}.png`});
  }
- assert.deepEqual(errors,[]);console.log('PASS: automatic in-sequence handover authorization, execution barrier, retry, transfer, add/move/remove/undo, and responsive layout.');
+ assert.deepEqual(errors,[]);console.log('PASS: automatic in-sequence handover authorization, execution barrier, retry, transfer, move and request changes, and responsive layout.');
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

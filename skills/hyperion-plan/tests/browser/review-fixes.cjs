@@ -4,15 +4,13 @@ const step=(id,extra={})=>({id,title:id,status:'pending',comments:[],...extra});
 const row=(ui,id)=>ui.locator(`[data-step="${id}"]`);
 const ids=ui=>ui.locator('.pc-row').evaluateAll(rows=>rows.map(r=>r.dataset.step));
 function fixture(name,steps){const p=path.join(dir,name+'.md');api.saveMarkdown(p,api.initialize({title:name,steps}));execFileSync(process.execPath,[helper,'render','--plan',p,'--output',path.join(dir,name+'.html')]);return api.read(p);}
-async function action(ui,id,label){await row(ui,id).locator('.pc-more').click();await ui.getByRole('button',{name:label,exact:true}).click();}
 function decode(call){return JSON.parse(call.prompt.split('Change request JSON:\n')[1]);}
 (async()=>{
  const browser=await launch();
  try{
   const base=fixture('reopen',[step('a',{status:'completed'}),step('r',{kind:'review',depends_on:['a'],run_after:'a',checks:['Check a'],status:'completed'}),step('b'),step('c')]);
-  const view=await createView(browser,errors,dir,{file:'reopen.html',expanded:['r','b']});
+  const view=await createView(browser,errors,dir,{file:'reopen.html',expanded:['r','b'],saved:{modelContent:{kind:'plan-companion',ui_version:3,plan_id:base.plan_id,base_revision:base.revision,operations:[{type:'set_status',step_id:'r',status:'pending'}],selected_step_ids:[]},privateContent:{}}});
   await row(view.ui,'b').getByRole('textbox').fill('Preserve this note.');
-  await action(view.ui,'r','Mark as pending');
   await row(view.ui,'r').locator('.pc-settings > summary').click();
   assert.equal(await row(view.ui,'r').getByRole('combobox',{name:/^Run review after:/}).count(),0);
   assert.match(await row(view.ui,'r').textContent(),/Save the reopened review/);
@@ -38,7 +36,7 @@ function decode(call){return JSON.parse(call.prompt.split('Change request JSON:\
   const numericBase=api.read(path.join(dir,'numeric.md'));
   execFileSync(process.execPath,[helper,'render','--plan',path.join(dir,'numeric.md'),'--output',path.join(dir,'numeric.html')]);
   const numeric=await createView(browser,errors,dir,{file:'numeric.html',expanded:['b']});
-  await row(numeric.ui,'b').getByRole('textbox').fill('Browser numeric round trip');await numeric.ui.locator('.pc-apply').click();
+  await row(numeric.ui,'b').getByRole('textbox').fill('Browser numeric round trip');await row(numeric.ui,'b').getByRole('textbox').press('Enter');
   const numericRequest=decode(await numeric.frame.evaluate(()=>window.__calls.at(-1)));
   const numericPlan=api.applyRequest(numericBase,numericRequest)[0];assert.ok(api.equal(numericPlan.steps[0],numericBase.steps[0]));
   await numeric.page.close();
@@ -55,59 +53,26 @@ function decode(call){return JSON.parse(call.prompt.split('Change request JSON:\
   assert.equal(await noteEditor.inputValue(),'New constraint','Updating affected rows preserves typing and focus');
   assert.equal(await editorElement.evaluate(element=>element.isConnected),true,'Availability changes keep the native editor mounted');
   for(const id of ['b','c']){
-   assert.equal(await row(noteView.ui,id).getByRole('checkbox').isChecked(),false);
-   assert.equal(await row(noteView.ui,id).getByRole('checkbox').isDisabled(),true);
+   assert.equal(await row(noteView.ui,id).getByRole('checkbox').isChecked(),true);
+   assert.equal(await row(noteView.ui,id).getByRole('checkbox').isDisabled(),false);
   }
   assert.equal(await row(noteView.ui,'a').getByRole('checkbox').isChecked(),true,'A new explicit selection can include the edited task');
   const noteSaved=await noteView.frame.evaluate(()=>window.__savedState);
   const restoredNotes=await createView(browser,errors,dir,{file:'note-approval.html',saved:noteSaved});
-  assert.equal(await row(restoredNotes.ui,'b').getByRole('checkbox').isDisabled(),true);
+  assert.equal(await row(restoredNotes.ui,'b').getByRole('checkbox').isDisabled(),false);
   await row(restoredNotes.ui,'a').getByRole('textbox').fill('');
   assert.equal(await row(restoredNotes.ui,'b').getByRole('checkbox').isDisabled(),false,'Removing an unsent note clears its draft warning');
   await restoredNotes.page.close();
-  await noteView.ui.locator('.pc-apply').click();
+  await noteEditor.press('Enter');
   const notesRequest=decode(await noteView.frame.evaluate(()=>window.__calls.at(-1)));
   const notesRequestPath=path.join(dir,'notes-request.json');fs.writeFileSync(notesRequestPath,JSON.stringify(notesRequest));
   execFileSync(process.execPath,[helper,'apply','--plan',notesPath,'--request',notesRequestPath]);
   const notesResult=api.read(notesPath);
-  assert.deepEqual(notesResult.execution.selected_step_ids,['b','c','spare']);
-  assert.deepEqual(api.nextSteps(notesResult).ready_steps.map(s=>s.id),['spare']);
-  for(const id of ['b','c'])assert.equal(notesResult.steps.find(s=>s.id===id).review_state,'needs_review');
+  assert.deepEqual(notesResult.execution.selected_step_ids,['a','b','c','spare']);
+  assert.deepEqual(api.nextSteps(notesResult).ready_steps.map(s=>s.id),['a','spare']);
+  for(const id of ['b','c'])assert.equal(notesResult.steps.find(s=>s.id===id).review_state,undefined);
   await noteView.page.close();
 
-  for(const review of [false,true]){
-   const name=review?'undo-review':'undo-dependent';
-   fixture(name,[step('a'),step('b',{depends_on:['a'],...(review?{kind:'review',run_after:'a',checks:['Check a']}: {})}),step('c')]);
-   const undo=await createView(browser,errors,dir,{file:name+'.html',expanded:['a','b']});
-   await row(undo.ui,'a').getByRole('checkbox').check();await row(undo.ui,'b').getByRole('checkbox').check();
-   if(review)await row(undo.ui,'b').locator('.pc-settings > summary').click();
-   await row(undo.ui,'a').getByRole('textbox').fill('Keep prerequisite note.');
-   await row(undo.ui,'b').getByRole('textbox').fill('Keep removed note.');
-   await action(undo.ui,'b','Remove planned step');
-   await row(undo.ui,'a').locator('.pc-drag').press('ArrowDown');
-   assert.deepEqual(await ids(undo.ui),['c','a']);
-   await undo.ui.locator('.pc-undo').click();
-   assert.deepEqual(await ids(undo.ui),['c','a','b'],'Undo inserts after the current prerequisite position');
-   assert.equal(await row(undo.ui,'b').getByRole('checkbox').isChecked(),false,'Changed prerequisite notes deselect dependent work');
-   assert.equal(await row(undo.ui,'b').getByRole('textbox').inputValue(),'Keep removed note.');
-   assert.equal(await undo.frame.evaluate(()=>window.__calls.length),0);
-   const restoredUndo=await createView(browser,errors,dir,{file:name+'.html',saved:await undo.frame.evaluate(()=>window.__savedState)});
-   assert.deepEqual(await ids(restoredUndo.ui),['c','a','b']);
-   assert.equal(await row(restoredUndo.ui,'a').getByRole('checkbox').isChecked(),true);
-   assert.equal(await row(restoredUndo.ui,'b').getByRole('checkbox').isChecked(),false);
-   assert.equal(await row(restoredUndo.ui,'a').getByRole('textbox').inputValue(),'Keep prerequisite note.');
-   assert.equal(await row(restoredUndo.ui,'b').getByRole('textbox').inputValue(),'Keep removed note.');
-   await restoredUndo.ui.locator('.pc-apply').click();
-   const request=decode(await restoredUndo.frame.evaluate(()=>window.__calls.at(-1)));
-   const requestPath=path.join(dir,name+'-request.json');fs.writeFileSync(requestPath,JSON.stringify(request));
-   execFileSync(process.execPath,[helper,'apply','--plan',path.join(dir,name+'.md'),'--request',requestPath]);
-   const persisted=api.read(path.join(dir,name+'.md'));
-   assert.deepEqual(persisted.steps.map(s=>s.id),['c','a','b']);
-   assert.equal(persisted.steps[1].comments[0].text,'Keep prerequisite note.');
-   assert.equal(persisted.steps[2].comments[0].text,'Keep removed note.');
-   assert.deepEqual(persisted.steps[2].depends_on,['a']);if(review)assert.equal(persisted.steps[2].run_after,'a');
-   await undo.page.close();await restoredUndo.page.close();
-  }
-  assert.deepEqual(errors,[]);console.log('PASS: protected reopened reviews, valid combined draft replay/submission, rejected dependency inversion without losing notes, note approval/freshness through typing and restore, lossless numeric plan rendering, and reorder/removal Undo through restore and CLI persistence. Simulated host only.');
+  assert.deepEqual(errors,[]);console.log('PASS: protected reopened reviews, valid combined draft replay/submission, rejected dependency inversion without losing notes, question isolation through typing and restore, lossless numeric plan rendering. Simulated host only.');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -2,8 +2,9 @@ import { JsonNumber, floatJSON, parseJSON } from "./json";
 /** Shared wire model. Unknown metadata is retained for Markdown compatibility. */
 export type Status = "pending" | "in_progress" | "completed";
 export type ExecutionState = "approved" | "paused" | "cancelled";
+export type ExecutionMode = "auto" | "sequential" | "parallel";
 export type Lifecycle = "active" | "finished";
-export type Intent = "edit" | "implement" | "review" | "decompose" | "replan" | "finish" | "reopen" | "handover";
+export type Intent = "ask" | "edit" | "implement" | "review" | "decompose" | "replan" | "finish" | "reopen" | "handover";
 export interface Note {
   id: string;
   text: string;
@@ -34,6 +35,7 @@ export interface Step {
   complexity?: "low" | "moderate" | "high" | "unknown";
   complexity_reason?: string;
   reasoning_effort?: ReasoningEffort;
+  parallel_group?: number;
   estimated_files?: number | null;
   estimate_note?: string;
   scope_warning?: string;
@@ -45,6 +47,7 @@ export interface Execution {
   request_id: string;
   state: ExecutionState;
   selected_step_ids: string[];
+  execution_mode?: ExecutionMode;
 }
 export interface PlanReview {
   request_id: string;
@@ -127,10 +130,12 @@ export interface ChangeRequest {
   intent?: Intent;
   operations: Operation[];
   selected_step_ids?: string[];
+  execution_mode?: ExecutionMode;
   target_step_ids?: string[];
   review_mode?: "refresh" | "independent";
   review_focus?: string;
   handover_reason?: string;
+  question?: string;
 }
 export interface CardConfig {
   plan: Plan;
@@ -369,6 +374,7 @@ export function validate(value: unknown): Plan {
       step.reasoning_effort === undefined || REASONING_EFFORTS.includes(step.reasoning_effort),
       "Invalid reasoning effort",
     );
+    requireValue(step.parallel_group === undefined || (Number.isSafeInteger(step.parallel_group) && step.parallel_group! > 0 && step.parallel_group! <= 30 && !["review", "handover"].includes(step.kind ?? "implementation")), "Invalid parallel group");
     string(
       defaultValue(step.complexity_reason, ""),
       "complexity rationale",
@@ -469,6 +475,18 @@ export function validate(value: unknown): Plan {
         );
       }
     }
+  // Group membership is a planning decision, but cannot contradict ordering.
+  for (const step of steps) {
+    if (!step.parallel_group) continue;
+    const ancestors = new Set<string>();
+    const collect = (id: string) => { for (const dep of graph.get(id)!) if (!ancestors.has(dep)) { ancestors.add(dep); collect(dep); } };
+    collect(step.id);
+    requireValue(![...ancestors].some(id => byId.get(id)!.parallel_group === step.parallel_group), "Parallel group contains dependent steps");
+    const members = steps.filter(s => s.parallel_group === step.parallel_group);
+    const first = Math.min(...members.map(s => positions.get(s.id)!));
+    const last = Math.max(...members.map(s => positions.get(s.id)!));
+    requireValue(!steps.slice(first, last + 1).some(s => s.kind === "review" || s.kind === "handover"), "Parallel group crosses a review or handover");
+  }
   const receipts = defaultValue(plan.applied_requests, {});
   requireValue(record(receipts), "Invalid request receipts");
   for (const [key, v] of Object.entries(receipts)) {
@@ -488,6 +506,10 @@ export function validate(value: unknown): Plan {
     requireValue(
       EXECUTION_STATES.includes(execution.state),
       "Invalid execution state",
+    );
+    requireValue(
+      execution.execution_mode === undefined || ["auto", "sequential", "parallel"].includes(execution.execution_mode),
+      "Invalid execution mode",
     );
     const selected = execution.selected_step_ids;
     requireValue(

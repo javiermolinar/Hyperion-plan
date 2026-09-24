@@ -45,6 +45,7 @@ const editableFields = new Set([
   "checks",
   "run_after",
   "reasoning_effort",
+  "parallel_group",
   "complexity",
   "complexity_reason",
   "estimated_files",
@@ -204,11 +205,22 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
     else if (step.status === "in_progress") inProgress.push(step);
     else if (step.kind !== "handover") ready.push(step);
   }
+  // A candidate is ready and selected, but still needs a coordinator's file/
+  // resource conflict check. Never dispatch across a selected review/checkpoint,
+  // including one that is waiting on earlier work. Active steps are resumed,
+  // not returned as fresh delegation candidates.
+  const barrier = plan.steps.findIndex(s => selected.has(s.id) && s.status !== "completed" &&
+    (s.kind === "review" || s.kind === "handover"));
+  const candidates = ["auto", "parallel"].includes(execution?.execution_mode ?? "sequential")
+    ? ready.filter(s => s.kind !== "review" && (barrier < 0 || plan.steps.indexOf(s) < barrier))
+    : [];
   return {
     plan_id: plan.plan_id,
     revision: plan.revision,
     lifecycle: plan.lifecycle ?? "active",
     execution_state: execution?.state ?? "unapproved",
+    execution_mode: execution?.execution_mode ?? "sequential",
+    parallel_candidates: candidates,
     ...(plan.execution_owner ? { execution_owner: plan.execution_owner } : {}),
     refresh_required: refreshRequired,
     ready_steps: ready,

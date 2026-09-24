@@ -14,6 +14,10 @@ node SKILL_DIR/dist/plan.cjs next --plan PLAN_MD
 
 `show` returns the full plan or one full step, including description, acceptance criteria, notes, and checks. Private request receipts are omitted. `next` returns `ready_steps`, `in_progress_steps`, `blocked_steps` with reasons, and `unselected_step_ids`. It follows plan order and requires every prerequisite to be completed before reporting a step ready. Including an unfinished prerequisite in the approved selection does not make its dependent ready now. Paused/cancelled scope, blockers, and freshness warnings prevent readiness. These commands never authorize or start work; the current user request and collaboration mode still govern whether to proceed.
 
+`next` also reports the effective `execution_mode` and `parallel_candidates`, populated in auto or parallel mode from ready selected implementation steps before the first unfinished selected review or handover barrier. In-progress steps remain separate and are not candidates for redispatch. These are dependency candidates, not proof that files or shared resources can be edited concurrently. Inspect ownership and overlap before dispatch; see [Parallel execution](parallel-execution.md).
+
+Implementation requests may include `execution_mode: "auto"`, `"sequential"`, or `"parallel"`; other intents cannot set it. The applied preference is persisted in `execution.execution_mode`. New cards use auto, letting the model decide whether to delegate. Missing mode defaults to sequential for compatibility; a new implementation request without the field does not inherit a previous parallel choice. Mode changes do not select additional steps or mark any work started.
+
 `show` and `next` do not write files or acquire a filesystem lock. If Markdown differs from its bookkeeping, they reconcile a snapshot in memory and report `refresh_required: true`. Run `status --plan PLAN_MD` to persist that refresh before continuing; `next` withholds ready work until then. `status` retains its existing refresh behavior, so use `show` for strictly read-only inspection. Concurrent changes detected during a Markdown read produce an error; retry the read.
 
 ## Finish and reopen
@@ -96,3 +100,9 @@ Use `handover --plan PLAN_MD --base-revision N --task-id ACTUAL_TASK_ID --input 
 The optional `handover_after` string on a step describes an advisory boundary and can be set with `step update --input`. An empty string removes its visible marker. It does not change implementation scope.
 
 Context handovers use `kind: "handover"` with `step add --input`. Pending checkpoints can be moved or removed with normal step commands. `next` returns `ready_handover_steps` separately from approved implementation; only approved, ready checkpoints appear, and the approved run authorizes their fresh tasks. The helper includes crossed checkpoints and the checkpoint immediately following the selected batch. The agent automatically applies a handover request and uses the transfer lifecycle at that point. See [Context handovers](handovers.md).
+
+## Step questions
+
+Apply an `intent: "ask"` request with `target_step_ids: ["stable-id"]`, a nonempty `question` up to 1000 characters, and `operations: []`. Do not include selected work or execution mode. The helper checks revision and ownership and saves an idempotent receipt without modifying steps, scope or freshness. Then answer or carry out the requested plan edits using the normal CLI. A receipt is not evidence that the answer or edits are complete. Retry with the same request ID and inspect prior results before repeating any change.
+
+Step updates accept `parallel_group` through `--input`: assign numbers 1–30 only to compatible implementation steps. Matching numbers identify planned parallel groups.

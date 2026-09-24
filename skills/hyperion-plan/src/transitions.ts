@@ -55,6 +55,7 @@ export function stepFingerprint(step: Step): { status: Status; scope: string } {
           "milestone",
           "handover_after",
           "reasoning_effort",
+          "parallel_group",
         ].includes(k),
     ),
   );
@@ -105,14 +106,18 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       plan.revision, `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
   const operations = request.operations,
     intent = request.intent === undefined ? "edit" : request.intent;
-  require(["edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
+  require(["ask", "edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
     intent,
   ), "Invalid request intent");
   require(Array.isArray(operations) &&
     operations.length <= 100, "Expected at most 100 operations");
+  require(request.execution_mode === undefined ||
+    (intent === "implement" && ["auto", "sequential", "parallel"].includes(request.execution_mode)),
+    "Execution mode is only valid on an implementation request and must be auto, sequential, or parallel");
   require(request.review_mode === undefined || (intent === "review" && ["refresh", "independent"].includes(request.review_mode)), "Invalid review mode");
   require(request.review_focus === undefined || (intent === "review" && request.review_mode === "independent" && typeof request.review_focus === "string" && request.review_focus.length <= 2000), "Invalid review focus");
   require(request.handover_reason === undefined || (intent === "handover" && typeof request.handover_reason === "string" && request.handover_reason.trim().length > 0 && request.handover_reason.length <= 2000), "Invalid handover reason");
+  require(request.question === undefined || (intent === "ask" && typeof request.question === "string" && request.question.trim().length > 0 && request.question.length <= 1000), "Invalid step question");
   const independent = intent === "review" && request.review_mode === "independent";
   const selected =
       request.selected_step_ids === undefined ? [] : request.selected_step_ids,
@@ -125,6 +130,10 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(!selected.length && !targets.length, "A lifecycle request cannot select or authorize work");
     if (intent === "reopen") require(!operations.length, "Reopen the plan before submitting edits");
     if (plan.lifecycle === "finished") require(!operations.length, "Reopen this finished plan before changing work");
+  } else if (intent === "ask") {
+    require(!operations.length && !selected.length && targets.length === 1 && typeof request.question === "string" && !!request.question.trim(), "Ask requires one step and a question, without edits or implementation selection");
+    identifier(targets[0]);
+    require(plan.steps.some(s => s.id === targets[0]), "Question target is absent");
   } else if (intent === "handover") {
     require(!selected.length && targets.length <= 1, "A handover cannot authorize work and may locate at most one step");
     targets.forEach(identifier);
@@ -146,7 +155,7 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(new Set(selected).size ===
       selected.length, "Duplicate selected step");
   }
-  if (!["review", "decompose", "replan", "handover"].includes(intent))
+  if (!["ask", "review", "decompose", "replan", "handover"].includes(intent))
     require(!targets.length, "Unexpected planning targets");
   const result = applyOperations(plan, operations),
     available = Object.fromEntries(result.steps.map((s) => [s.id, s]));
@@ -199,6 +208,7 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       request_id: rid,
       state: "approved",
       selected_step_ids: clone(executionSelection),
+      ...(request.execution_mode !== undefined ? { execution_mode: request.execution_mode } : {}),
     };
   } else if (independent) {
     require(!result.plan_reviews?.some(r => r.state === "requested" || r.state === "running"), "An independent plan review is already active");
@@ -235,7 +245,9 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       "A prerequisite is being reviewed or decomposed.",
     );
   }
-  result.revision++;
+  // A question receipt changes no visible plan state. Keep the card usable
+  // after a pure answer; actual follow-up edits advance the revision normally.
+  if (intent !== "ask") result.revision++;
   result.applied_requests = {
     ...(result.applied_requests ?? {}),
     [rid]: digest,
@@ -446,6 +458,7 @@ export function summary(plan: Plan) {
     "blocked_by",
     "depends_on",
     "reasoning_effort",
+    "parallel_group",
     "complexity",
     "complexity_reason",
     "size",

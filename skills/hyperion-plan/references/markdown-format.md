@@ -75,3 +75,7 @@ A step comment can include `"reasoning_effort":"high"`. Omission or `"inherit"` 
 ## Context handover checkpoints
 
 Set `"kind":"handover"` in a step comment, with the handover reason in its description. Its position separates phases: preceding steps must finish and later work waits for ownership transfer. The helper maintains status from actual handover events; manual completion is rejected. Ordinary dependencies still apply. Legacy `handover_after` markers remain advisory and are not automatically converted into checkpoints.
+
+## Parallel groups
+
+Use `"parallel_group":1` in step metadata for implementation work assessed by the planner as safe to overlap. Matching numbers share a group; numbers range from 1 to 30. Omit the field for sequential work. Review and handover steps cannot have groups. Direct or transitive dependencies within a group and groups spanning review/handover barriers are rejected. Membership is an execution preference, not implementation authorization or proof of actual concurrency. It is preserved in Markdown, inspection and exports; changing membership alone preserves approval and freshness. Use `step update --input` or `revise` to assign groups after checking actual file and resource independence.

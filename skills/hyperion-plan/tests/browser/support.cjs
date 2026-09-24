@@ -26,6 +26,7 @@ function launch() {
 
 async function createView(browser, errors, dir, {file, saved=null, width=736, theme='light', expanded=[], hasTouch=false}) {
   const page = await browser.newPage({viewport:{width,height:1800}, colorScheme:theme, hasTouch});
+  page.setDefaultTimeout(10000);
   page.on('pageerror', error => errors.push(error.message));
   await page.setContent('<style>body{margin:0}</style><iframe style="border:0;width:100%;height:1750px" sandbox="allow-scripts"></iframe>');
   const mock = '<script>window.__calls=[];window.__fail=false;window.openai={widgetState:'+
