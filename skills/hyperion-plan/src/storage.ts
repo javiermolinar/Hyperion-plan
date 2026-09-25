@@ -174,6 +174,10 @@ export function loadMarkdown(p: string): [Plan, boolean, string] {
         }
         if (old.scope !== fp.scope) {
           changed.add(step.id);
+          if (old.status === "in_progress") {
+            step.status = "in_progress";
+            step.needs_replanning = true;
+          }
           if (step.status !== "completed") {
             step.review_state = "needs_review";
             step.review_note =

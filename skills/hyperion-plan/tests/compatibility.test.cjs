@@ -4,6 +4,29 @@ const api = require("../dist/index.cjs");
 const fixture = require("./fixtures/python-baseline.json");
 for (const [index, c] of fixture.cases.entries())
   test(`Python compatibility ${index + 1}: ${c.test.split(".").at(-1)} / ${c.fn}`, () => {
+    // Freshness is advisory now; retain the frozen fixture and assert the new contract.
+    if (c.error?.startsWith("Step needs review:") && c.fn === "checkpoint") {
+      const [result, changed] = api[c.fn](...c.args);
+      assert.equal(changed, true);
+      assert.equal(result.steps.find(s => s.id === c.args[2]).status, c.args[3]);
+      return;
+    }
+    if (c.fn === "revise" && c.test.endsWith(".test_agent_revision_preserves_receipts") && !c.error) {
+      const actual = api[c.fn](...c.args), expected = api.clone(c.result);
+      for (const step of expected.steps) {
+        const old = c.args[0].steps.find(s => s.id === step.id);
+        if (old?.status === "in_progress" && api.stepFingerprint(old).scope !== api.stepFingerprint(step).scope)
+          step.needs_replanning = true;
+      }
+      assert.deepEqual(actual, expected);
+      return;
+    }
+    if (c.fn === "applyRequest" && c.test.endsWith(".test_agent_revision_preserves_receipts") && !c.error) {
+      const expected = api.clone(c.result);
+      expected[0].steps.find(s => s.id === "inspect").needs_replanning = true;
+      assert.deepEqual(api[c.fn](...c.args), expected);
+      return;
+    }
     if (c.error) {
       assert.throws(() => api[c.fn](...c.args));
       return;

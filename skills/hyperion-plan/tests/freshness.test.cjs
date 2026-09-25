@@ -1,0 +1,73 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const a = require('../dist/index.cjs');
+const base = () => a.initialize({title:'Updated architecture',steps:[{id:'a',title:'API'},{id:'b',title:'Client',depends_on:['a']}]});
+const request = (p, ids=['a','b']) => ({plan_id:p.plan_id,base_revision:p.revision,request_id:'run-'+p.revision,intent:'implement',operations:[],selected_step_ids:ids,selection_snapshot:a.clone(p.steps.filter(s=>ids.includes(s.id)))});
+test('freshness warnings allow selection and execution but actual prerequisites and blockers hold',()=>{
+ let p=base(); Object.assign(p.steps[0],{review_state:'needs_review',review_note:'Architecture changed'});
+ assert.throws(()=>a.applyRequest(p,request(p,['b'])),/Missing prerequisite/);
+ [p]=a.applyRequest(p,request(p));
+ [p]=a.checkpoint(p,p.revision,'a','in_progress','Starting updated scope');
+ [p]=a.checkpoint(p,p.revision,'a','completed','API checks passed');
+ assert.equal(p.steps[0].review_state,'current');
+ assert.equal(p.steps[1].review_state,'needs_review');
+ assert.deepEqual(a.nextSteps(p).ready_steps.map(s=>s.id),['b']);
+ [p]=a.checkpoint(p,p.revision,'b','in_progress');
+ p.steps[1].blocked_by='Choose API version';
+ assert.throws(()=>a.applyRequest(p,request(p,['b'])),/blocked/);
+});
+test('Run reconciles stale unchanged selections and completed work, rejects changed scope and stale edits',()=>{
+ let p=base(), req=request(p);
+ const replacement=a.clone(p); replacement.title='Renamed plan';
+ p=a.revise(p,replacement,p.revision);
+ let [run]=a.applyRequest(p,req);
+ assert.deepEqual(run.execution.selected_step_ids,['a','b']);
+ [run]=a.checkpoint(run,run.revision,'a','completed','Done');
+ const another={...req,request_id:'another-run'};
+ const [resumed]=a.applyRequest(run,another);
+ assert.deepEqual(resumed.execution.selected_step_ids,['b']);
+ assert.deepEqual(a.applyRequest(resumed,another),[resumed,false]);
+ const changed=a.clone(p); changed.steps[1].description='New architecture';
+ const latest=a.revise(p,changed,p.revision);
+ assert.throws(()=>a.applyRequest(latest,req),/Selected scope changed/);
+ assert.throws(()=>a.applyRequest(p,{...req,operations:[{type:'add_comment',step_id:'a',comment_id:'n',text:'New requirement'}]}),/Stale plan/);
+});
+test('a coordinated revision saves dependencies and review evidence atomically and preserves partial work',t=>{
+ let p=base(); [p]=a.applyRequest(p,request(p,['a']));
+ [p]=a.checkpoint(p,p.revision,'a','in_progress','Existing adapter implemented');
+ const replacement=a.clone(p);
+ Object.assign(replacement.steps[0],{description:'Updated API scope',progress_note:'Accidental replacement',review_state:'current',review_note:'Verified updated contract against adapter'});
+ Object.assign(replacement.steps[1],{depends_on:[],review_state:'current',review_note:'Client can use existing adapter independently'});
+ p=a.revise(p,replacement,p.revision);
+ assert.equal(p.steps[0].needs_replanning,true);
+ assert.equal(p.steps[0].status,'in_progress');
+ assert.equal(p.steps[0].progress_note,'Existing adapter implemented');
+ assert.deepEqual(p.steps.map(s=>s.review_state),['current','current']);
+ assert.deepEqual(p.execution.selected_step_ids,[]);
+ assert.throws(()=>a.checkpoint(p,p.revision,'a','in_progress'),/outside/);
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'freshness-')); t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'plan.md'); a.saveMarkdown(file,p);
+ const [saved]=a.loadMarkdown(file); assert.equal(saved.steps[0].needs_replanning,true);
+ [p]=a.applyRequest(saved,request(saved,['a']));
+ assert.equal(p.steps[0].needs_replanning,undefined);
+ assert.equal(p.steps[0].progress_note,'Existing adapter implemented');
+ assert.deepEqual(a.nextSteps(p).in_progress_steps.map(s=>s.id),['a']);
+});
+test('invalid coordinated revisions leave the original scope and review state untouched',()=>{
+ const p=base(), before=a.clone(p), replacement=a.clone(p);
+ Object.assign(replacement.steps[0],{depends_on:['missing'],review_state:'current',review_note:'Inspected'});
+ assert.throws(()=>a.revise(p,replacement,p.revision),/Unknown prerequisite/);
+ assert.deepEqual(p,before);
+});
+
+test('active note edits mark replanning and keep prior evidence',()=>{
+ let p=base(); [p]=a.applyRequest(p,request(p,['a']));
+ [p]=a.checkpoint(p,p.revision,'a','in_progress','Partial adapter');
+ [p]=a.applyRequest(p,{plan_id:p.plan_id,base_revision:p.revision,request_id:'note',intent:'edit',operations:[{type:'add_comment',step_id:'a',comment_id:'scope',text:'Use the new transport'}]});
+ assert.equal(p.steps[0].needs_replanning,true);
+ assert.equal(p.steps[0].progress_note,'Partial adapter');
+ assert.deepEqual(p.execution.selected_step_ids,[]);
+});

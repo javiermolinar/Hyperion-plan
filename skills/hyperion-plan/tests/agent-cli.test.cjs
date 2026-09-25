@@ -46,7 +46,7 @@ test('next requires prior approval and reports stale scopes and explicit blocker
  const f=setup(t,{approve:false});assert.deepEqual(run('next','--plan',f.p).ready_steps,[]);
  let p=f.read();[p]=api.applyRequest(p,{plan_id:p.plan_id,base_revision:p.revision,request_id:'go',intent:'implement',operations:[],selected_step_ids:['a','c']});
  p.steps.find(s=>s.id==='a').blocked_by='Awaiting input';Object.assign(p.steps.find(s=>s.id==='c'),{review_state:'needs_review',review_note:'Changed interface'});api.saveMarkdown(f.p,p);
- const n=run('next','--plan',f.p);assert.deepEqual(n.ready_steps,[]);assert.match(JSON.stringify(n.blocked_steps),/Awaiting input/);assert.match(JSON.stringify(n.blocked_steps),/Changed interface/);
+ const n=run('next','--plan',f.p);assert.deepEqual(n.ready_steps.map(s=>s.id),["c"]);assert.match(JSON.stringify(n.blocked_steps),/Awaiting input/);assert.equal(n.ready_steps[0].review_note,"Changed interface");
 });
 test('step update previews and applies the same scope invalidation without altering unrelated steps',t=>{
  const f=setup(t),old=f.read(),before=snapshot(f.dir);

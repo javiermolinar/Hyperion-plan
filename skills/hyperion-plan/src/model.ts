@@ -41,6 +41,7 @@ export interface Step {
   scope_warning?: string;
   review_state?: "current" | "needs_review";
   review_note?: string;
+  needs_replanning?: boolean;
   [key: string]: unknown;
 }
 export interface Execution {
@@ -130,6 +131,7 @@ export interface ChangeRequest {
   intent?: Intent;
   operations: Operation[];
   selected_step_ids?: string[];
+  selection_snapshot?: Step[];
   execution_mode?: ExecutionMode;
   target_step_ids?: string[];
   review_mode?: "refresh" | "independent";
@@ -402,6 +404,7 @@ export function validate(value: unknown): Plan {
       ),
       "Invalid review state",
     );
+    requireValue(step.needs_replanning === undefined || typeof step.needs_replanning === "boolean", "Invalid replanning state");
     if (step.review_state === "needs_review") {
       string(step.review_note, "reason for review", 2000);
       requireValue(
@@ -590,7 +593,7 @@ export function handoverBlocker(steps: Step[], step: Step, selected: string[] = 
   const before = steps.slice(0, steps.findIndex(s => s.id === step.id));
   for (const boundary of before.filter(s => s.kind === "handover" && s.status !== "completed")) {
     if (!selected.includes(boundary.id)) return `Automatic handover first: ${boundary.title}`;
-    if (boundary.blocked_by || boundary.review_state === "needs_review") return `Resolve handover checkpoint: ${boundary.title}`;
+    if (boundary.blocked_by) return `Resolve handover checkpoint: ${boundary.title}`;
     if (steps.slice(0, steps.indexOf(boundary)).some(s => s.status !== "completed" && !selected.includes(s.id)))
       return "Select preceding work to reach the automatic handover";
   }
@@ -605,10 +608,7 @@ export function checkReady(
   orderedSteps?: Step[],
 ): void {
   if (orderedSteps) requireValue(!handoverBlocker(orderedSteps, step, selected), handoverBlocker(orderedSteps, step, selected));
-  requireValue(
-    defaultValue(step.review_state, "current") === "current",
-    `Step needs review: ${step.id}`,
-  );
+  requireValue(!step.needs_replanning, `Needs replanning: ${step.id}. Resume with updated scope.`);
   requireValue(!step.blocked_by, `Step is blocked: ${step.id}`);
   for (const dep of prerequisites(step))
     requireValue(

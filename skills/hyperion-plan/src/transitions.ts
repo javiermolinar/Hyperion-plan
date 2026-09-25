@@ -52,6 +52,7 @@ export function stepFingerprint(step: Step): { status: Status; scope: string } {
           "blocked_by",
           "review_state",
           "review_note",
+          "needs_replanning",
           "milestone",
           "handover_after",
           "reasoning_effort",
@@ -101,9 +102,12 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(receipt === digest, "Request ID was reused with different changes");
     return [clone(plan), false];
   }
-  require(Number.isSafeInteger(request.base_revision) &&
-    request.base_revision ===
-      plan.revision, `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
+  const stale = request.base_revision !== plan.revision;
+  const canRevalidate = request.intent === "implement" && Array.isArray(request.operations) &&
+    !request.operations.length && Array.isArray(request.selection_snapshot);
+  require(Number.isSafeInteger(request.base_revision) && request.base_revision >= 1 &&
+    request.base_revision <= plan.revision && (!stale || canRevalidate),
+    `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
   const operations = request.operations,
     intent = request.intent === undefined ? "edit" : request.intent;
   require(["ask", "edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
@@ -166,6 +170,7 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       ? available[previous.id]
       : undefined;
     if (!step || equal(previous.comments ?? [], step.comments ?? [])) continue;
+    if (previous.status === "in_progress") step.needs_replanning = true;
     if (result.execution)
       result.execution.selected_step_ids =
         result.execution.selected_step_ids.filter((id) => id !== step.id);
@@ -194,7 +199,18 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     }];
   } else if (intent === "implement") {
     require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "Finish or cancel the active handover before implementing");
-    const executionSelection = withHandoverCheckpoints(result.steps, selected);
+    if (stale) {
+      const snapshot = request.selection_snapshot!;
+      for (const sid of selected) {
+        const previous = snapshot.find(s => s.id === sid), latest = available[sid];
+        require(previous && latest, `Selected step was removed: ${sid}. Refresh the plan and choose the remaining work.`);
+        require(latest.status === "completed" || stepFingerprint(previous).scope === stepFingerprint(latest).scope,
+          `Selected scope changed: ${sid}. Refresh the plan and select the updated scope.`);
+      }
+    }
+    // Already completed work needs no restart when an older card is submitted.
+    const executionSelection = withHandoverCheckpoints(result.steps,
+      stale ? selected.filter(id => available[id]?.status !== "completed") : selected);
     for (const sid of executionSelection) {
       require(Object.hasOwn(
         available,
@@ -202,6 +218,7 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
       ), `Selected step is absent or removed: ${sid}`);
       require(available[sid].status !==
         "completed", `Selected step is already completed: ${sid}`);
+      delete available[sid].needs_replanning;
       checkReady(available[sid], available, executionSelection, result.steps);
     }
     result.execution = {
@@ -286,11 +303,21 @@ export function revise(plan: Plan, replacement: Plan, revision: number): Plan {
       plan.execution.selected_step_ids.filter((id) => remaining.has(id));
   }
   const changed = new Set<string>();
+  // Explicit evidence submitted with a revision settles freshness in the same write.
+  const reviewed = new Map(result.steps.filter(step => step.review_state === "current" &&
+    step.review_note?.trim() && step.review_note !== oldSteps[step.id]?.review_note).map(step => [step.id, step.review_note!]));
   for (const step of result.steps) {
     const old = Object.hasOwn(oldSteps, step.id)
       ? oldSteps[step.id]
       : undefined;
     if (!old) continue;
+    if (old.needs_replanning) step.needs_replanning = true;
+    if (old.status === "in_progress" && stepFingerprint(old).scope !== stepFingerprint(step).scope) {
+      step.status = "in_progress";
+      if (old.progress_note !== undefined) step.progress_note = old.progress_note;
+      else delete step.progress_note;
+      step.needs_replanning = true;
+    }
     if (old.kind === "handover") {
       require(step.kind === "handover", "Preserve handover checkpoint type");
       require(step.status === old.status, "Handover checkpoints complete only when ownership transfers");
@@ -319,6 +346,10 @@ export function revise(plan: Plan, replacement: Plan, revision: number): Plan {
     changed,
     "A prerequisite changed. Review this step against the updated plan and code.",
   );
+  for (const step of result.steps) if (reviewed.has(step.id) && step.status !== "completed") {
+    step.review_state = "current";
+    step.review_note = reviewed.get(step.id)!;
+  }
   validate(result);
   validateStepOrder(result.steps);
   return result;
@@ -372,6 +403,7 @@ export function checkpoint(
         );
       if (status === "completed") {
         string(note, "completion evidence", 2000);
+        if (step.review_state === "needs_review") step.review_state = "current";
         delete step.blocked_by;
       }
       step.status = status;
@@ -467,6 +499,7 @@ export function summary(plan: Plan) {
     "scope_warning",
     "review_state",
     "review_note",
+    "needs_replanning",
   ];
   return {
     plan_id: plan.plan_id,

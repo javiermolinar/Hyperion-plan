@@ -289,8 +289,7 @@ declare global {
   function blockReason(step: Step, candidates = selected) {
     const boundary = handoverBlocker(draft, step, withHandoverCheckpoints(draft, [...candidates, step.id]));
     if (boundary) return boundary;
-    if (reviewReason(step)) return "Needs plan review";
-    if (step.blocked_by) return "Blocked: " + step.blocked_by;
+    if (step.blocked_by) return "Blocked: " + step.blocked_by + ". Use Ask Codex to resolve this blocker.";
     const missing = executionDeps(step).filter(
       (id) => byId(id)?.status !== "completed" && !candidates.has(id),
     );
@@ -911,6 +910,14 @@ declare global {
     q(".pc-execution-option").hidden = finished;
     implement.disabled = !!sending || !runIds.length || handoverActive();
     implement.title = handoverActive() ? "Finish or cancel the handover before continuing work." : "";
+    if (handoverActive()) {
+      hint.hidden = false;
+      hint.textContent = "Run is unavailable during a handover. Finish or cancel the handover to continue.";
+    } else if (!runIds.length && available) {
+      hint.hidden = false;
+      hint.textContent = selectable.size ? "Select a step to enable Run. " + hint.textContent
+        : "Run is unavailable. Resolve the reasons shown beside the steps, then select work.";
+    }
     implement.textContent =
       sending === "implement" ? "Opening…" : runLabel(runIds);
     const large = ids.filter((id) => broad(byId(id)!));
@@ -956,7 +963,7 @@ declare global {
             : available.length
               ? `Available next: #${stepNumber(available[0].id)}`
               : unfinished.some((s) => reviewReason(s))
-              ? "Review flagged steps to unlock work"
+              ? "Select steps to validate the updated plan"
               : "Resolve blockers before starting work";
   }
   // Note input can change dependent availability. Update those rows in place so
@@ -978,6 +985,8 @@ declare global {
         if (reason) check.setAttribute("aria-describedby", root.id + "-condition-" + step.id);
         else check.removeAttribute("aria-describedby");
       }
+      const resume = row.querySelector<HTMLButtonElement>(".pc-resume-scope");
+      if (resume) resume.disabled = !!sending || !!reason || handoverActive();
       const copy = q(".pc-copy", row);
       copy.querySelector(".pc-condition")?.remove();
       if (reason) {
@@ -987,10 +996,9 @@ declare global {
       }
       const meta = q(".pc-step-meta", row);
       meta.querySelector(".pc-review-label")?.remove();
-      if (step.status !== "completed" && reviewReason(step))
-        meta.append(el("span", "pc-review-label", "Needs plan review"));
+      if (step.status !== "completed" && (reviewReason(step) || step.needs_replanning))
+        meta.append(el("span", "pc-review-label", step.needs_replanning ? "Needs replanning" : "Changed since last review"));
       const context = q(".pc-row-context", row);
-      context.querySelectorAll(".pc-row-action").forEach(action => action.remove());
 
       if (isHandover(step) && step.status !== "completed") {
         context.replaceChildren(el("span", "pc-automatic-handover", "Automatic when execution reaches this step"));
@@ -1188,8 +1196,8 @@ declare global {
         );
         meta.append(type);
       } else meta.append(el("span", "pc-complexity", complexityLabel(step)));
-      if (!isDone && reviewReason(step))
-        meta.append(el("span", "pc-review-label", "Needs plan review"));
+      if (!isDone && (reviewReason(step) || step.needs_replanning))
+        meta.append(el("span", "pc-review-label", step.needs_replanning ? "Needs replanning" : "Changed since last review"));
       if (isDone)
         meta.append(
           el(
@@ -1529,6 +1537,17 @@ declare global {
         details.append(editor);
       }
       row.append(details);
+      if (!finished && step.needs_replanning) {
+        const resume = btn("Resume with updated scope", "pc-resume-scope", () => {
+          selected.add(step.id);
+          save();
+          void submit("implement");
+        });
+        resume.disabled = !!sending || !!blockReason(step) || handoverActive();
+        const recovery = el("div", "pc-replanning");
+        recovery.append(resume, el("p", "pc-muted", "Earlier work is preserved. Run validation will check the updated scope and prerequisites."));
+        row.append(recovery);
+      }
       if (step.handover_after) {
         const point = el("div", "pc-handover-point");
         point.append(el("strong", "", "Good handover point"), el("span", "", " · " + step.handover_after));
@@ -1756,6 +1775,7 @@ declare global {
     };
     if (intent === "implement") {
       request.selected_step_ids = ids;
+      request.selection_snapshot = base.steps.filter(step => ids.includes(step.id));
       request.execution_mode = "auto";
     }
     if (intent === "ask") request.question = questions.get(targets[0])!.trim();
@@ -1773,7 +1793,7 @@ declare global {
         : intent === "reopen"
           ? "Reopen this plan through the helper and show the current card for selection. Preserve task history. Reopening does not approve or resume implementation; wait for a fresh work selection."
           : intent === "implement"
-        ? "Apply the included plan edits, then implement ONLY the selected work. Choose sequential or parallel execution for the selected scope; dispatch only ready independent implementation steps as described below. This run also explicitly requests fresh Codex tasks at the automatic handover checkpoints included by the helper in execution.selected_step_ids. When next reports a ready_handover_steps entry, immediately apply a handover request for that checkpoint and follow references/handovers.md without another confirmation. Prepare the brief, create one fresh task on the same checkout, verify readiness, transfer ownership, and continue the remaining approved scope there. Stop execution in the source after transfer. Do not bypass a checkpoint or start unselected implementation work. Keep other unselected steps for later. Honor each step’s reasoning_effort where the execution interface supports it; inherit keeps the task setting. Check model support and disclose unavailable overrides; saved preferences do not change a running turn. Selection is not completion. Before working on each implementation or review step, save an in_progress checkpoint. Save its completion with observed evidence, or its incomplete result/blocker, before starting dependent work; checkpoint each dispatched step separately. Do not batch progress writes at the end of the run. After each saved start, completion, or blocker change, report the step and state in commentary; commentary does not replace checkpointing. Handover steps use the transfer lifecycle. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward."
+        ? "Validate the selected steps against the latest canonical plan before starting. Apply this request through the helper; it can revalidate a stale selection-only card when scope is unchanged and omit already completed work. Reconcile routine inconsistencies automatically. If the helper reports changed scope or stale edits, inspect and reconcile them before retrying; ask only for a missing meaningful decision, never merely to clear a freshness warning. Changed since last review is advisory: inspect assumptions as part of starting work, recording evidence together with any scope/dependency revision. Preserve earlier work when resuming updated scope. Apply the included plan edits, then implement ONLY the selected work. Choose sequential or parallel execution for the selected scope; dispatch only ready independent implementation steps as described below. This run also explicitly requests fresh Codex tasks at the automatic handover checkpoints included by the helper in execution.selected_step_ids. When next reports a ready_handover_steps entry, immediately apply a handover request for that checkpoint and follow references/handovers.md without another confirmation. Prepare the brief, create one fresh task on the same checkout, verify readiness, transfer ownership, and continue the remaining approved scope there. Stop execution in the source after transfer. Do not bypass a checkpoint or start unselected implementation work. Keep other unselected steps for later. Honor each step’s reasoning_effort where the execution interface supports it; inherit keeps the task setting. Check model support and disclose unavailable overrides; saved preferences do not change a running turn. Selection is not completion. Before working on each implementation or review step, save an in_progress checkpoint. Save its completion with observed evidence, or its incomplete result/blocker, before starting dependent work; checkpoint each dispatched step separately. Do not batch progress writes at the end of the run. After each saved start, completion, or blocker change, report the step and state in commentary; commentary does not replace checkpointing. Handover steps use the transfer lifecycle. After meaningful changes, revalidate affected unfinished steps and preserve completed history. Do not silently expand scope. If the active collaboration mode prohibits implementation, retain this selected scope and explain the mode constraint. Do not execute the same request twice. Refresh the card with observed progress afterward."
         : intent === "decompose"
           ? "Apply the included edits, then break ONLY the target_step_ids into smaller verifiable steps with explicit dependencies and grounded effort estimates. Preserve completed history and unrelated steps. Rewire downstream dependencies. New child steps are not authorized for implementation. Show the revised plan for selection; this request does not start implementation."
           : intent === "review"

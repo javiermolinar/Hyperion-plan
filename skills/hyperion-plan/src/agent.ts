@@ -190,8 +190,7 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
       );
     if (execution!.state !== "approved")
       reasons.push(`Execution is ${execution!.state}`);
-    if (step.review_state === "needs_review")
-      reasons.push(step.review_note || "Step needs review");
+    if (step.needs_replanning) reasons.push("Needs replanning: resume with updated scope");
     if (step.blocked_by) reasons.push(step.blocked_by);
     const missing = prerequisites(step).filter(
       (id) => byId.get(id)!.status !== "completed",
@@ -228,7 +227,7 @@ export function nextSteps(plan: Plan, refreshRequired = false) {
       ready_handover_steps: !refreshRequired && plan.lifecycle !== "finished" && execution?.state === "approved" &&
         !plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state))
         ? plan.steps.filter(s => s.kind === "handover" && selected.has(s.id) && s.status === "pending" &&
-          !s.blocked_by && s.review_state !== "needs_review" && !handoverBlocker(plan.steps, s) &&
+          !s.blocked_by && !s.needs_replanning && !handoverBlocker(plan.steps, s) &&
           prerequisites(s).every(id => byId.get(id)?.status === "completed")) : [],
     } : {}),
     in_progress_steps: inProgress,

@@ -12,7 +12,7 @@ node SKILL_DIR/dist/plan.cjs show --plan PLAN_MD --step-id STEP_ID
 node SKILL_DIR/dist/plan.cjs next --plan PLAN_MD
 ```
 
-`show` returns the full plan or one full step, including description, acceptance criteria, notes, and checks. Private request receipts are omitted. `next` returns `ready_steps`, `in_progress_steps`, `blocked_steps` with reasons, and `unselected_step_ids`. It follows plan order and requires every prerequisite to be completed before reporting a step ready. Including an unfinished prerequisite in the approved selection does not make its dependent ready now. Paused/cancelled scope, blockers, and freshness warnings prevent readiness. These commands never authorize or start work; the current user request and collaboration mode still govern whether to proceed.
+`show` returns the full plan or one full step, including description, acceptance criteria, notes, and checks. Private request receipts are omitted. `next` returns `ready_steps`, `in_progress_steps`, `blocked_steps` with reasons, and `unselected_step_ids`. It follows plan order and requires every prerequisite to be completed before reporting a step ready. Including an unfinished prerequisite in the approved selection does not make its dependent ready now. Paused/cancelled scope and actual blockers prevent readiness. Freshness warnings are advisory; inspect them during Run. Changed active scope requires Resume with updated scope. These commands never authorize or start work; the current user request and collaboration mode still govern whether to proceed.
 
 `next` also reports the effective `execution_mode` and `parallel_candidates`, populated in auto or parallel mode from ready selected implementation steps before the first unfinished selected review or handover barrier. In-progress steps remain separate and are not candidates for redispatch. These are dependency candidates, not proof that files or shared resources can be edited concurrently. Inspect ownership and overlap before dispatch; see [Parallel execution](parallel-execution.md).
 
@@ -70,7 +70,7 @@ For example, to add a review, supply `--input` containing:
 }
 ```
 
-Pass its new ID with `--step-id` and place it after `integration`. Step inputs cannot change identity, status, execution approval, comments, progress, or freshness fields. Use `checkpoint` for observed progress, `review` for plan freshness, and the note commands for comments. Use `revise` for coordinated decomposition or changes spanning multiple steps. Use `apply` unchanged for explicit card submissions and their idempotent request receipts.
+Pass its new ID with `--step-id` and place it after `integration`. Step inputs cannot change identity, status, execution approval, comments, progress, or freshness fields. Use `checkpoint` for observed progress, `review` for plan freshness, and the note commands for comments. Use `revise` for coordinated decomposition or changes spanning multiple steps. Include `review_state: "current"` and a new nonempty `review_note` on each inspected step to save scope, dependencies, and review evidence atomically. Active scope changes retain earlier progress and expose Resume with updated scope. Use `apply` unchanged for explicit card submissions and their idempotent request receipts.
 
 ## Notes and replies
 

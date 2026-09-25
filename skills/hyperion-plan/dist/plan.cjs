@@ -1896,6 +1896,7 @@ function validate(value) {
       ),
       "Invalid review state"
     );
+    requireValue(step.needs_replanning === void 0 || typeof step.needs_replanning === "boolean", "Invalid replanning state");
     if (step.review_state === "needs_review") {
       string(step.review_note, "reason for review", 2e3);
       requireValue(
@@ -2068,7 +2069,7 @@ function handoverBlocker(steps, step, selected = []) {
   const before = steps.slice(0, steps.findIndex((s) => s.id === step.id));
   for (const boundary of before.filter((s) => s.kind === "handover" && s.status !== "completed")) {
     if (!selected.includes(boundary.id)) return `Automatic handover first: ${boundary.title}`;
-    if (boundary.blocked_by || boundary.review_state === "needs_review") return `Resolve handover checkpoint: ${boundary.title}`;
+    if (boundary.blocked_by) return `Resolve handover checkpoint: ${boundary.title}`;
     if (steps.slice(0, steps.indexOf(boundary)).some((s) => s.status !== "completed" && !selected.includes(s.id)))
       return "Select preceding work to reach the automatic handover";
   }
@@ -2078,10 +2079,7 @@ function handoverBlocker(steps, step, selected = []) {
 }
 function checkReady(step, available, selected = [], orderedSteps) {
   if (orderedSteps) requireValue(!handoverBlocker(orderedSteps, step, selected), handoverBlocker(orderedSteps, step, selected));
-  requireValue(
-    defaultValue(step.review_state, "current") === "current",
-    `Step needs review: ${step.id}`
-  );
+  requireValue(!step.needs_replanning, `Needs replanning: ${step.id}. Resume with updated scope.`);
   requireValue(!step.blocked_by, `Step is blocked: ${step.id}`);
   for (const dep of prerequisites(step))
     requireValue(
@@ -2322,6 +2320,7 @@ function stepFingerprint(step) {
         "blocked_by",
         "review_state",
         "review_note",
+        "needs_replanning",
         "milestone",
         "handover_after",
         "reasoning_effort",
@@ -2364,7 +2363,12 @@ function applyRequest(plan, value) {
     requireValue(receipt === digest, "Request ID was reused with different changes");
     return [clone(plan), false];
   }
-  requireValue(Number.isSafeInteger(request.base_revision) && request.base_revision === plan.revision, `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`);
+  const stale = request.base_revision !== plan.revision;
+  const canRevalidate = request.intent === "implement" && Array.isArray(request.operations) && !request.operations.length && Array.isArray(request.selection_snapshot);
+  requireValue(
+    Number.isSafeInteger(request.base_revision) && request.base_revision >= 1 && request.base_revision <= plan.revision && (!stale || canRevalidate),
+    `Stale plan: request revision ${request.base_revision}, current revision ${plan.revision}`
+  );
   const operations = request.operations, intent = request.intent === void 0 ? "edit" : request.intent;
   requireValue(["ask", "edit", "implement", "review", "decompose", "replan", "finish", "reopen", "handover"].includes(
     intent
@@ -2414,6 +2418,7 @@ function applyRequest(plan, value) {
   for (const previous of plan.steps) {
     const step = Object.hasOwn(available, previous.id) ? available[previous.id] : void 0;
     if (!step || equal(previous.comments ?? [], step.comments ?? [])) continue;
+    if (previous.status === "in_progress") step.needs_replanning = true;
     if (result.execution)
       result.execution.selected_step_ids = result.execution.selected_step_ids.filter((id) => id !== step.id);
     invalidateDependents(
@@ -2443,13 +2448,28 @@ function applyRequest(plan, value) {
     }];
   } else if (intent === "implement") {
     requireValue(!plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)), "Finish or cancel the active handover before implementing");
-    const executionSelection = withHandoverCheckpoints(result.steps, selected);
+    if (stale) {
+      const snapshot = request.selection_snapshot;
+      for (const sid of selected) {
+        const previous = snapshot.find((s) => s.id === sid), latest = available[sid];
+        requireValue(previous && latest, `Selected step was removed: ${sid}. Refresh the plan and choose the remaining work.`);
+        requireValue(
+          latest.status === "completed" || stepFingerprint(previous).scope === stepFingerprint(latest).scope,
+          `Selected scope changed: ${sid}. Refresh the plan and select the updated scope.`
+        );
+      }
+    }
+    const executionSelection = withHandoverCheckpoints(
+      result.steps,
+      stale ? selected.filter((id) => available[id]?.status !== "completed") : selected
+    );
     for (const sid of executionSelection) {
       requireValue(Object.hasOwn(
         available,
         sid
       ), `Selected step is absent or removed: ${sid}`);
       requireValue(available[sid].status !== "completed", `Selected step is already completed: ${sid}`);
+      delete available[sid].needs_replanning;
       checkReady(available[sid], available, executionSelection, result.steps);
     }
     result.execution = {
@@ -2525,9 +2545,17 @@ function revise(plan, replacement, revision2) {
     result.execution.selected_step_ids = plan.execution.selected_step_ids.filter((id) => remaining.has(id));
   }
   const changed = /* @__PURE__ */ new Set();
+  const reviewed = new Map(result.steps.filter((step) => step.review_state === "current" && step.review_note?.trim() && step.review_note !== oldSteps[step.id]?.review_note).map((step) => [step.id, step.review_note]));
   for (const step of result.steps) {
     const old = Object.hasOwn(oldSteps, step.id) ? oldSteps[step.id] : void 0;
     if (!old) continue;
+    if (old.needs_replanning) step.needs_replanning = true;
+    if (old.status === "in_progress" && stepFingerprint(old).scope !== stepFingerprint(step).scope) {
+      step.status = "in_progress";
+      if (old.progress_note !== void 0) step.progress_note = old.progress_note;
+      else delete step.progress_note;
+      step.needs_replanning = true;
+    }
     if (old.kind === "handover") {
       requireValue(step.kind === "handover", "Preserve handover checkpoint type");
       requireValue(step.status === old.status, "Handover checkpoints complete only when ownership transfers");
@@ -2555,6 +2583,10 @@ function revise(plan, replacement, revision2) {
     changed,
     "A prerequisite changed. Review this step against the updated plan and code."
   );
+  for (const step of result.steps) if (reviewed.has(step.id) && step.status !== "completed") {
+    step.review_state = "current";
+    step.review_note = reviewed.get(step.id);
+  }
   validate(result);
   validateStepOrder(result.steps);
   return result;
@@ -2596,6 +2628,7 @@ function checkpoint(plan, revision2, stepId2, status, note2, blockedBy, executio
         );
       if (status === "completed") {
         string(note2, "completion evidence", 2e3);
+        if (step.review_state === "needs_review") step.review_state = "current";
         delete step.blocked_by;
       }
       step.status = status;
@@ -2672,7 +2705,8 @@ function summary(plan) {
     "estimate_note",
     "scope_warning",
     "review_state",
-    "review_note"
+    "review_note",
+    "needs_replanning"
   ];
   return {
     plan_id: plan.plan_id,
@@ -2839,8 +2873,7 @@ function nextSteps(plan, refreshRequired = false) {
       );
     if (execution.state !== "approved")
       reasons.push(`Execution is ${execution.state}`);
-    if (step.review_state === "needs_review")
-      reasons.push(step.review_note || "Step needs review");
+    if (step.needs_replanning) reasons.push("Needs replanning: resume with updated scope");
     if (step.blocked_by) reasons.push(step.blocked_by);
     const missing = prerequisites(step).filter(
       (id) => byId.get(id).status !== "completed"
@@ -2867,7 +2900,7 @@ function nextSteps(plan, refreshRequired = false) {
     refresh_required: refreshRequired,
     ready_steps: ready,
     ...plan.steps.some((s) => s.kind === "handover") ? {
-      ready_handover_steps: !refreshRequired && plan.lifecycle !== "finished" && execution?.state === "approved" && !plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)) ? plan.steps.filter((s) => s.kind === "handover" && selected.has(s.id) && s.status === "pending" && !s.blocked_by && s.review_state !== "needs_review" && !handoverBlocker(plan.steps, s) && prerequisites(s).every((id) => byId.get(id)?.status === "completed")) : []
+      ready_handover_steps: !refreshRequired && plan.lifecycle !== "finished" && execution?.state === "approved" && !plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)) ? plan.steps.filter((s) => s.kind === "handover" && selected.has(s.id) && s.status === "pending" && !s.blocked_by && !s.needs_replanning && !handoverBlocker(plan.steps, s) && prerequisites(s).every((id) => byId.get(id)?.status === "completed")) : []
     } : {},
     in_progress_steps: inProgress,
     blocked_steps: blocked,
@@ -4072,6 +4105,10 @@ function loadMarkdown(p) {
         }
         if (old.scope !== fp.scope) {
           changed.add(step.id);
+          if (old.status === "in_progress") {
+            step.status = "in_progress";
+            step.needs_replanning = true;
+          }
           if (step.status !== "completed") {
             step.review_state = "needs_review";
             step.review_note = "Edited in Markdown. Check the updated scope and notes before running.";

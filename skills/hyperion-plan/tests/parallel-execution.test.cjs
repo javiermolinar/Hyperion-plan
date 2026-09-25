@@ -44,7 +44,7 @@ test('parallel candidates obey readiness, active work, review barriers and lifec
  p.steps[1].blocked_by='Shared resource';
  assert.deepEqual(a.nextSteps(p).parallel_candidates,[]);
  delete p.steps[1].blocked_by; p.steps[1].review_state='needs_review'; p.steps[1].review_note='Changed prerequisite';
- assert.deepEqual(a.nextSteps(p).parallel_candidates,[]);
+ assert.deepEqual(ids(a.nextSteps(p).parallel_candidates),['b']);
  delete p.steps[1].review_state; delete p.steps[1].review_note;
  p.steps[0].status='completed';p.steps[1].status='completed';
  assert.deepEqual(ids(a.nextSteps(p).parallel_candidates),['dependent']);

@@ -102,6 +102,6 @@ test('partial phase runs omit unreachable or blocked trailing checkpoints',()=>{
  assert.throws(()=>run(p,['b','c']),/preceding/);
  for(const fields of [{blocked_by:'Wait'},{review_state:'needs_review',review_note:'Verify boundary'}]) {
   const held=a.clone(p);Object.assign(held.steps[2],fields);
-  assert.deepEqual(run(held,['a','b']).execution.selected_step_ids,['a','b']);
+  assert.deepEqual(run(held,['a','b']).execution.selected_step_ids,fields.blocked_by ? ['a','b'] : ['a','b','h']);
  }
 });
