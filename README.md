@@ -11,7 +11,7 @@ Hyperion Plan gives you control over how Codex tackles substantial engineering w
 Install directly from GitHub as a standalone skill by pasting this into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.4.0/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.4.1/skills/hyperion-plan
 ```
 
 Requires Node.js 22 or newer and the Visualize skill for interactive cards. After installation, invoke it with `$hyperion-plan`.
@@ -26,6 +26,12 @@ Upgrading from v1.0.0? Remove the old `plan-companion` skill after installing `h
 
 *Example plan with Ask Codex, two steps in a parallel group, reasoning efforts, and a handover checkpoint. The card follows your light or dark appearance.*
 
+## What’s new in v1.4.1
+
+Changed steps stay selectable with a **Changed since last review** warning. Run validates the selection against the latest plan; unchanged selections from older cards can proceed, and already completed work is skipped. Actual blockers and missing prerequisites still prevent execution, with a reason and a concrete next action shown beside the disabled control.
+
+Architecture revisions can save scope, dependencies, and review evidence together. If an in-progress step changes scope, **Needs replanning** and **Resume with updated scope** make the interruption explicit while preserving earlier work. Refresh existing cards after upgrading to see these controls.
+
 ## Take control of the work
 
 - **Keep long plans manageable.** Group adjacent steps into collapsible milestones with progress and blockers. Select the steps you want to run.
@@ -35,7 +41,7 @@ Upgrading from v1.0.0? Remove the old `plan-companion` skill after installing `h
 - **Shape the plan as you go.** Drag pending tasks into order, or use **Ask Codex** on a step to request a change, split work, add a review, or ask a question. Dependencies and completed history stay protected.
 - **Distinguish planning from code review.** **Review plan** offers a same-context refresh or an **Independent review** in a fresh task, with whole-plan or selected-step scope and optional focus. Review status and reconciled findings stay attached to the canonical plan without starting implementation. **Review implemented code** runs selected independent code reviews. Supporting evidence stays in step details.
 - **Make review part of the plan.** Add independent review steps with explicit checks. Choose when a review runs and which work it inspects, then select it when you want it carried out.
-- **Keep the plan honest.** Track progress, blockers, and completion evidence. Changes to approved requirements revoke the affected approval; changed prerequisites flag unfinished dependent work for another look.
+- **Keep the plan honest.** Track progress, blockers, and completion evidence. Changes to approved requirements revoke the affected approval; changed prerequisites show an advisory warning on unfinished dependent work. Recheck assumptions during Run without a separate review gate.
 - **Continue in fresh context.** Codex proposes handover checkpoints between coherent phases in large plans. Move or remove them like other pending steps; an approved run automatically continues in a fresh task when it reaches the checkpoint. Ask Codex to plan an additional context handover. A fresh task receives the same canonical plan and working checkout; durable events record progress, next action, and execution ownership. There is no compaction prediction or context monitor.
 - **Bring the context into code review.** Generate review briefs and PR notes from the plan's intent, acceptance criteria, discussions, and recorded results.
 
@@ -45,7 +51,7 @@ Finish a plan when you are done using it. **Finish plan** stops automatic cards 
 
 1. Ask Codex to build a plan for the change, including the dependencies and checks that matter.
 2. Refine the steps in the card. Add notes, split uncertain work, and choose the next batch.
-3. Click **Implement** to send that selection to Codex. Review its results in the refreshed plan before choosing what comes next.
+3. Click **Implement** to send that selection to Codex. It checks the latest plan, resolves routine inconsistencies, and asks only when a meaningful decision is missing. Review its results in the refreshed plan before choosing what comes next.
 
 The plan lives in Markdown alongside revision and approval bookkeeping. You and Codex can revisit it across turns, and agents can inspect or update it through the bundled CLI. Interactive cards run inside the Codex conversation through Visualize; the CLI requires Node.js 22 or newer.
 
