@@ -46,6 +46,24 @@
 
   // src/model.ts
   var REASONING_EFFORTS = ["inherit", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  var STEP_EDITABLE_FIELDS = /* @__PURE__ */ new Set([
+    "title",
+    "short_title",
+    "milestone",
+    "handover_after",
+    "description",
+    "done_when",
+    "depends_on",
+    "checks",
+    "run_after",
+    "reasoning_effort",
+    "parallel_group",
+    "complexity",
+    "complexity_reason",
+    "estimated_files",
+    "estimate_note",
+    "scope_warning"
+  ]);
   var STATUSES = ["pending", "in_progress", "completed"];
   var EXECUTION_STATES = ["approved", "paused", "cancelled"];
   function requireValue(condition, message) {
@@ -578,7 +596,26 @@
         continue;
       }
       requireValue(step, `Unknown step: ${sid}`);
-      if (op.type === "move_review" || op.type === "update_review") {
+      if (op.type === "update_step") {
+        requireValue(record(op.fields), "Expected a step update object");
+        const keys = Object.keys(op.fields);
+        requireValue(keys.length > 0, "Supply at least one step field");
+        for (const key of keys)
+          requireValue(STEP_EDITABLE_FIELDS.has(key), `Unsupported step field: ${key}`);
+        const protectedReview = Object.hasOwn(original, sid) && original[sid].kind === "review" && original[sid].status !== "pending" ? original[sid] : step.kind === "review" && step.status !== "pending" ? step : void 0;
+        if (protectedReview) {
+          for (const field of ["depends_on", "checks", "run_after"])
+            if (Object.hasOwn(op.fields, field))
+              requireValue(
+                equal(protectedReview[field] ?? null, op.fields[field] ?? null),
+                "Preserve the scope and timing of active or completed reviews"
+              );
+        }
+        for (const [field, value] of Object.entries(clone(op.fields))) {
+          if (value === null) delete step[field];
+          else step[field] = value;
+        }
+      } else if (op.type === "move_review" || op.type === "update_review") {
         requireValue(step.kind === "review", "Expected a review step");
         requireValue(
           step.status === "pending" && (!Object.hasOwn(original, sid) || original[sid].status === "pending"),
@@ -661,6 +698,7 @@
         "reorder_steps",
         "move_review",
         "update_review",
+        "update_step",
         "add_step",
         "remove_step"
       ].includes(op.type)

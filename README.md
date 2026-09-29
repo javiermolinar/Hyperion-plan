@@ -56,3 +56,52 @@ Finish a plan when you are done using it. **Finish plan** stops automatic cards 
 The plan lives in Markdown alongside revision and approval bookkeeping. You and Codex can revisit it across turns, and agents can inspect or update it through the bundled CLI. Interactive cards run inside the Codex conversation through Visualize; the CLI requires Node.js 22 or newer.
 
 Codex chooses reasoning effort for new steps and shows it as a compact badge. Click its brain-icon badge to optionally choose a different level; existing plans without a preference keep the task setting. Explicit levels are passed to supported Codex execution interfaces when available; saving the plan does not change an already running turn.
+
+## Use the native Pi screen
+
+The Pi adapter opens the same Markdown plan and uses the shared Hyperion core; it does not create a parallel plan format. Build and install the package from a checkout:
+
+```bash
+npm --prefix skills/hyperion-plan install
+npm --prefix skills/hyperion-plan run build
+pi install --local "$PWD/skills/hyperion-plan"
+```
+
+After installation, run `/reload` in an existing Pi session. You can then ask naturally:
+
+- “Open `docs/pi-support-plan.md`.”
+- “Show the current plan.”
+- “Rename step 2 to ‘Verify recovery’.”
+- “Add a note to step 3 about the missing smoke test.”
+- “Finish this plan” or “Reopen this plan.”
+
+The model-callable `hyperion_plan` tool supports `discover`, `open`, `show`, `create`, `edit`, `finish`, and `reopen`. Opening resolves the plan and queues the native screen until the current turn settles. Edits save directly through the shared core with plan identity, revision, ownership, and retry checks; they do not discard unsent screen drafts or authorize implementation. Creating requires a new `.md` path and title in the tool call and creates no tasks. For a new planning request without a preferred filename, the agent uses `plans/<short-topic>.md`. Requested dummy/demo plans can use `demo: true` so discovery ignores them. Inspection and mutations also work in non-TUI modes; opening there returns plan data and reports that the screen is unavailable.
+
+The `/hyperion-plan path/to/plan.md` command remains available. If a plan was already bound in the current Pi session, `/hyperion-plan` reopens that path; otherwise it asks for one. A missing explicitly selected `.md` path can create a new empty plan after confirmation through the command. The extension never searches outside the workspace or resumes saved approval automatically.
+
+### Plan awareness and two views
+
+Before each user turn, the extension supplies the model with planning guidance and a compact canonical snapshot. “Plan this change” uses Hyperion without naming it; “show the plan” requests the overlay, while status questions stay inline. Session bindings are read from the active branch, including after restoration or compaction.
+
+Resolution prefers the session binding, then an explicit project default, then one unambiguous active canonical plan. Configure a workspace default in `.pi/hyperion-plan.json`:
+
+```json
+{"default_plan":"docs/pi-support-plan.md"}
+```
+
+Or disable automatic scanning with `{"discover":false}`. Discovery is bounded, read-only, and parser-validated. It excludes fixture/test/example/build/hidden directories, symlinks, generated exports, and plans marked `<!-- hyperion-plan-demo -->`. Plain Markdown is not silently converted. Ambiguous or incomplete discovery requires a choice; broken bindings and invalid defaults never silently switch to another plan. Finished plans are history, not resumable approval.
+
+Canonical changes produce compact **inline progress** messages at tool/turn boundaries, without opening the overlay, stealing focus, or starting another turn. Unchanged snapshots are deduplicated. The **overlay** remains the interactive workspace; if opened while busy, it refreshes and becomes editable after settlement while preserving drafts and conflicts.
+
+The first Pi adapter runs approved steps sequentially in the current Pi session. Selection is not approval; **Run** writes the exact selected scope through the shared core before sending work to Pi. Step edits remain session-persisted drafts until saved. Independent reviewers, handover sessions, and worker processes are not simulated; a selection that would cross those barriers is blocked. Non-TUI modes can use the plan tool or shared CLI, not the native screen. Pi 0.87.1 or newer is the supported native UI baseline; Pi 0.87.1 itself requires Node.js 22.19 or newer.
+
+### Real Pi regression checks
+
+```bash
+npm --prefix skills/hyperion-plan run test:pi:runtime
+npm --prefix skills/hyperion-plan run test:pi:terminal
+```
+
+The runtime test uses the real Pi SDK and a deterministic, network-free provider to inspect model-visible tools and plan context across startup, reload, newly loaded tools, and session restoration. The terminal test runs the real interactive CLI under VHS, exercises reload and a prompted open without a plan path, and captures the overlay, inline progress, and bound reopen. It requires `vhs` and `ttyd`. VHS uses an installed or cached Chromium browser and may download its browser runtime when neither is available. Temporary workspaces, settings, and credentials are isolated; test artifacts are retained in the printed temporary directory. These tests do not establish real-model language-routing accuracy or explain every live-session extension failure.
+
+Use **↑/↓** or **j/k** to focus steps, **Space** to select, **Tab** for details, **r** to Run, **e** to edit, **n** to add, **m** for a note, **v** to check plan freshness, **a** to Ask, **s** to save drafts, **z** to discard, **[ / ]** to reorder pending steps, **f** to finish/reopen, **g** to refresh, and **Esc/q** to close. Fullscreen mouse clicks select steps and activate visible controls.

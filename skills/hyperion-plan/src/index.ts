@@ -7,3 +7,4 @@ export * from "./agent";
 export { loads, dumps, uuid5 } from "./markdown";
 
 export * from "./handovers";
+export * from "./service";

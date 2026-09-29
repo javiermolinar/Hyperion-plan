@@ -11,6 +11,11 @@ The maintained implementation is TypeScript. This skill is self-contained inside
 - `src/browser.ts`: existing card interactions compiled to a self-contained browser script.
 - `assets/plan-card.html`: the original markup and CSS with build-time data/script placeholders.
 - `dist/plan.cjs`, `dist/index.cjs`, `dist/browser.js`: shipped executable/library/browser bundles. Never hand-edit these.
+- `src/pi/extension.ts`, `src/pi/ui.ts`: native Pi command, session binding/drafts, and terminal screen.
+- `src/pi/execution.ts`: Pi capability and barrier checks shared by screen previews and locked Run validation.
+- `src/pi/tools.ts`: model-callable plan management with settlement-deferred opening and shared-core mutations. No implementation approval or automatic execution.
+- `src/pi/progress.ts`: canonical inline progress snapshots, branch-aware deduplication, and transcript rendering without focus or continuation.
+- `src/pi/discovery.ts`, `src/pi/awareness.ts`: bounded canonical discovery, binding/default precedence, and model-facing context. No implicit conversion, creation, or implementation.
 - `tests/*.test.cjs`: Node regression and compatibility tests.
 - `tests/browser/`: browser suites, shared simulated host, and fixtures.
 
@@ -48,6 +53,20 @@ The original Python implementation is retained only in the immutable review evid
 `tests/review-fixes.test.cjs` covers canonical output protection through symlink aliases, Unicode line/paragraph separators in task metadata, lossless numeric receipts/approval refresh, and history/prerequisite invariants across combined operations. `tests/fixtures/legacy-numeric/` contains frozen Python-written plans, receipts, fingerprints, and numeric serialization expectations.
 
 `tests/review-regressions.test.cjs` checks card-note approval revocation and dependent freshness, protected review scope under whole-plan revisions, and prerequisite ordering for targeted and whole-plan changes. CLI cases verify Markdown and JSON persistence, rejected writes, and dry runs. Browser review-fix checks cover dependent deselection while typing notes, draft restoration, and the resulting saved approval state.
+
+## Pi tool checks
+
+`tests/pi-tools.test.cjs` loads the shipped Pi bundle with a simulated extension host. It covers tool registration, explicit paths and binding identity, read-only inspection, deferred editable opening, non-TUI behavior, canonical edits, revision conflicts, retry receipts, ownership, lifecycle, empty-plan creation, cancellation/session cleanup, and stale UI draft preservation. `tests/pi.test.cjs` covers the command, service, and screen components. These component tests alone do not prove real-host screen delivery.
+
+`tests/pi-runtime.test.cjs` exercises the actual Pi SDK, project package discovery, model-facing tool schemas/context, cold startup, reload, newly enabled tools, and session restoration. It uses `tests/pi/scripted-provider.ts`, a deterministic provider that performs no network requests. Its UI boundary is simulated; it is not a terminal screenshot test or a real-LLM routing evaluation.
+
+`npm run test:pi:terminal` runs `tests/pi/terminal-smoke.cjs`: the actual interactive Pi CLI inside VHS, with isolated settings/workspace and the scripted provider. It asserts reload events, provider-visible tools, queued open, settlement, native overlay rendering, inline progress, and unchanged approval. Screenshots, ASCII terminal frames, provider traces, plan files, and VHS diagnostics remain in the printed temporary directory. Requires VHS and ttyd. Existing Rod browser-cache versions are linked individually into the isolated test home; user Pi settings and credentials are not loaded. VHS can download its Chromium runtime into that isolated cache when no supported installed/cached browser exists. Input is paced to avoid zero-delay terminal/autocomplete races. No cmux automation, user-session input injection, or user credentials are used.
+
+`tests/pi-awareness.test.cjs` covers no/one/multiple candidates, project defaults, disabled scanning, parser errors, bounded/incomplete scans, symlink containment, excluded fixtures/demos, finished plans, missing/replaced bindings, active-branch restoration, and data-only prompt encoding. It also rejects migration aliases without reading their targets, including files replaced between discovery reads, and ignores canonical examples inside fenced Markdown. `tests/pi-tools.test.cjs` also checks inline update deduplication, no-focus/no-turn delivery, finished-plan quietness, and recovery of busy overlay controls.
+
+`tests/pi-races.test.cjs` uses a simulated Pi host with real plan locks to test barriers inserted after Run's initial read, busy/idle and session changes while waiting for a lock, draft preservation on rejected saves, and saved-but-undelivered requests. Safe stale-selection reconciliation still permits unrelated changes and omits completed work. These are deterministic adapter tests, not real-runtime concurrency or live-model execution tests. Shared-core regressions in `tests/review-regressions.test.cjs` cover dependency ordering and protected review history through `update_step`, including status-reset batches and rejected Markdown/JSON writes.
+
+Keep real-model natural-language evaluations separate and opt-in. Passing a scripted-provider scenario proves tool/context transport and UI delivery, not that an arbitrary model will choose the right action.
 
 ## Browser checks
 

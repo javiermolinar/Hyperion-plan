@@ -21,9 +21,21 @@ for (const [index, c] of fixture.cases.entries())
       assert.deepEqual(actual, expected);
       return;
     }
-    if (c.fn === "applyRequest" && c.test.endsWith(".test_agent_revision_preserves_receipts") && !c.error) {
+    if (c.fn === "applyRequest" && !c.error) {
       const expected = api.clone(c.result);
-      expected[0].steps.find(s => s.id === "inspect").needs_replanning = true;
+      const previous = c.args[0];
+      for (const oldStep of previous.steps) {
+        const nextStep = expected[0].steps.find(step => step.id === oldStep.id);
+        if (!nextStep || api.stepFingerprint(oldStep).scope === api.stepFingerprint(nextStep).scope) continue;
+        if (oldStep.status === "in_progress") nextStep.needs_replanning = true;
+        const commentsChanged = !api.equal(oldStep.comments ?? [], nextStep.comments ?? []);
+        const commentsOnly = commentsChanged && api.stepFingerprint({ ...oldStep, comments: [] }).scope ===
+          api.stepFingerprint({ ...nextStep, comments: [] }).scope;
+        if (!commentsOnly && nextStep.status !== "completed") {
+          nextStep.review_state = "needs_review";
+          nextStep.review_note = "This step changed. Review its scope and prerequisites.";
+        }
+      }
       assert.deepEqual(api[c.fn](...c.args), expected);
       return;
     }
