@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import { assertPiWaveCompletions } from "./pi/wave-checkpoint";
+import { assertPiReviewCompletions } from "./pi/review-checkpoint";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Plan, record, requireValue as require, validate } from "./model";
@@ -18,18 +20,8 @@ import {
   withLock,
 } from "./storage";
 
-export interface PlanSnapshot {
-  path: string;
-  plan: Plan;
-  refresh_required: boolean;
-  source_digest: string;
-  summary: ReturnType<typeof summary>;
-  export_warning?: string;
-}
-
-export interface PlanMutationResult extends PlanSnapshot {
-  changed: boolean;
-}
+import type { PlanSnapshot, PlanMutationResult } from "./hosts/contracts";
+export type { PlanSnapshot, PlanMutationResult } from "./hosts/contracts";
 
 export type PlanMutation = (plan: Plan) => [Plan, boolean];
 
@@ -132,6 +124,8 @@ export async function mutatePlan(
     let sourceDigest = current.source_digest;
     let exportWarning: string | undefined;
     if (changed) {
+      assertPiWaveCompletions(planPath, current.plan, plan, actorId);
+      assertPiReviewCompletions(planPath, current.plan, plan, actorId);
       if (path.extname(planPath).toLowerCase() === ".md")
         saveMarkdown(planPath, plan, current.source_digest);
       else {
@@ -162,11 +156,14 @@ export async function mutatePlan(
 export async function createPlan(
   input: string,
   title: string,
-  options: { cwd?: string; preamble?: string } = {},
+  options: { cwd?: string; preamble?: string; beforeWrite?: () => void } = {},
 ): Promise<PlanSnapshot> {
   const planPath = selectedPlanPath(input, options.cwd);
   require(path.extname(planPath).toLowerCase() === ".md", "New plans must use a .md path");
   return withLock(planPath, () => {
+    // Creation may have waited for the lock; reject cancellation before any
+    // canonical Markdown, sidecar, recovery copy or export is written.
+    options.beforeWrite?.();
     require(!fs.existsSync(planPath), "Plan already exists; open it or choose another path");
     const plan = initialize({ title, steps: [], ...(options.preamble ? { preamble: options.preamble } : {}) });
     saveMarkdown(planPath, plan);

@@ -112,7 +112,13 @@ export function registerPlanTool(pi: ExtensionAPI, host: PlanToolHost): void {
       let changed: boolean | undefined;
       if (action === "create") {
         if (!explicitPath || !params.title?.trim()) throw new Error("Create requires an explicit .md path and a non-empty title.");
-        snapshot = await createPlan(explicitPath, params.title.trim(), { cwd: ctx.cwd, ...(params.demo ? { preamble: DEMO_MARKER } : {}) });
+        snapshot = await createPlan(explicitPath, params.title.trim(), {
+          cwd: ctx.cwd, beforeWrite: () => signal?.throwIfAborted(),
+          ...(params.demo ? { preamble: DEMO_MARKER } : {}),
+        });
+        // A cancellation during lock release cannot undo a committed write,
+        // but must not also change this session's binding.
+        signal?.throwIfAborted();
         host.bind(snapshot);
         changed = true;
       } else {
@@ -137,7 +143,7 @@ export function registerPlanTool(pi: ExtensionAPI, host: PlanToolHost): void {
             // Recheck the binding under the lock, not only before acquiring it.
             if (binding && binding.plan_id !== current.plan_id) throw new Error("The session-bound plan was replaced.");
             return applyRequest(current, request);
-          }, { cwd: ctx.cwd });
+          }, { cwd: ctx.cwd, beforeWrite: () => signal?.throwIfAborted() });
           snapshot = result;
           changed = result.changed;
         }

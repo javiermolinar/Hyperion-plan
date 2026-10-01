@@ -59,6 +59,12 @@ test('real Pi runtime exposes the packaged tool to the provider before/after rel
     } });
   };
   await start();
+  assert.ok(!manager.getBranch().some(entry => entry.type === 'custom' && entry.customType === 'hyperion-plan.binding'));
+  await session.prompt('/hyperion-plan');
+  assert.equal(frames.length, 1, 'cold slash command discovers the plan before any model turn');
+  assert.match(frames[0], /Runtime regression/);
+  assert.ok(manager.getBranch().some(entry => entry.type === 'custom' && entry.customType === 'hyperion-plan.binding'));
+  frames.length = 0;
   const phases = ['cold', 'reload', 'restore', 'tool-added', 'compacted-restore'];
   for (const phase of phases) {
     if (phase === 'reload') await session.reload();

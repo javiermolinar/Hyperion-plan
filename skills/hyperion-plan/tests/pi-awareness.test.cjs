@@ -8,9 +8,10 @@ const core = require('../dist/index.cjs');
 async function harness(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hyperion-awareness-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  let tool; const entries = [], handlers = new Map();
+  let tool, command; const entries = [], handlers = new Map();
   (await import('../dist/hyperion-plan-pi.js')).default({
-    registerTool: value => { tool = value; }, registerCommand() {}, registerMessageRenderer() {},
+    registerTool: value => { if (value.name === 'hyperion_plan') tool = value; },
+    registerCommand: (name, value) => { if (name === 'hyperion-plan') command = value; }, registerMessageRenderer() {},
     on(name, fn) { if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(fn); return () => {}; },
     appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }),
     sendMessage() { assert.fail('Awareness must not post progress or start work on its own'); },
@@ -29,6 +30,22 @@ async function harness(t) {
     },
     config(value) { fs.mkdirSync(path.join(dir, '.pi'), { recursive: true }); fs.writeFileSync(path.join(dir, '.pi/hyperion-plan.json'), JSON.stringify(value)); },
     call: params => tool.execute('test-call', params, undefined, undefined, ctx),
+    async open(args = '', ui = {}) {
+      const frames = [], notices = [];
+      await command.handler(args, { ...ctx, mode: 'tui', ui: {
+        notify: (message, type) => notices.push({ message, type }),
+        input() { assert.fail('A discovered plan must not require typing a path'); },
+        select() { assert.fail('An unambiguous plan must not require a choice'); },
+        confirm() { assert.fail('Opening must not create a plan'); },
+        custom: async factory => {
+          const theme = { fg: (_role, text) => text, bg: (_role, text) => text, bold: text => text };
+          frames.push(factory({ requestRender() {}, terminal: { rows: 42 } }, theme, {}, () => {}).render(120).join('\n'));
+          return { type: 'close' };
+        },
+        ...ui,
+      } });
+      return { frames, notices };
+    },
     async context() {
       const event = { prompt: 'What should we plan?', systemPromptOptions: { sections: {}, selectedTools: ['hyperion_plan'] } };
       for (const fn of handlers.get('before_agent_start') ?? []) await fn(event, ctx);
@@ -36,6 +53,104 @@ async function harness(t) {
     },
   };
 }
+
+test('cold slash command discovers and binds one active plan without changing files or starting work', async t => {
+  const h = await harness(t), saved = h.plan('docs/feature.md', 'Cold command discovery');
+  h.plan('tests/fixture.md');
+  h.plan('demo.md', 'Demo', { preamble: '<!-- hyperion-plan-demo -->' });
+  h.plan('history.md', 'History', { lifecycle: 'finished' });
+  const files = [saved.path, core.markdownStatePath(saved.path)];
+  const before = files.map(file => fs.readFileSync(file));
+  const opened = await h.open();
+  assert.match(opened.frames[0], /Cold command discovery/);
+  assert.deepEqual(h.entries.map(entry => entry.data), [{ path: saved.path, plan_id: saved.plan.plan_id }]);
+  assert.deepEqual(files.map(file => fs.readFileSync(file)), before);
+  assert.equal((await core.loadPlanSnapshot(saved.path)).plan.execution, undefined);
+});
+
+test('slash command prefers explicit path, then binding, then configured default', async t => {
+  const h = await harness(t), first = h.plan('first.md', 'First plan'), second = h.plan('second.md', 'Second plan');
+  h.config({ default_plan: 'second.md' });
+  assert.match((await h.open()).frames[0], /Second plan/);
+  h.config({ default_plan: 'first.md' });
+  assert.match((await h.open()).frames[0], /Second plan/);
+  assert.match((await h.open(first.path)).frames[0], /First plan/);
+  assert.equal(h.entries.at(-1).data.plan_id, first.plan.plan_id);
+  assert.notEqual(first.plan.plan_id, second.plan.plan_id);
+});
+
+test('ambiguous slash command offers discovered paths and remembers the chosen plan', async t => {
+  const h = await harness(t); h.plan('first.md'); const chosen = h.plan('docs/second.md', 'Second plan');
+  h.plan('history.md', 'History', { lifecycle: 'finished' });
+  const opened = await h.open('', { select: async (_title, options) => {
+    assert.ok(options.some(option => option.includes('first.md')));
+    assert.ok(!options.some(option => option.includes('history.md')));
+    return options.find(option => option.includes('docs/second.md'));
+  } });
+  assert.match(opened.frames[0], /Second plan/);
+  assert.equal(h.entries.at(-1).data.plan_id, chosen.plan.plan_id);
+  assert.match((await h.open()).frames[0], /Second plan/);
+});
+
+test('cancelling discovered plan selection neither binds nor prompts for a path', async t => {
+  const h = await harness(t); h.plan('first.md'); h.plan('second.md');
+  const opened = await h.open('', { select: async () => undefined });
+  assert.deepEqual(opened.frames, []);
+  assert.deepEqual(h.entries, []);
+});
+
+for (const mode of ['empty', 'finished', 'disabled']) test(`slash command asks for a path when discovery is ${mode}`, async t => {
+  const h = await harness(t);
+  if (mode === 'finished') h.plan('history.md', 'History', { lifecycle: 'finished' });
+  if (mode === 'disabled') { h.plan('active.md'); h.config({ discover: false }); }
+  let inputs = 0;
+  const opened = await h.open('', { input: async title => { inputs++; assert.match(title, /path/i); return undefined; } });
+  assert.equal(inputs, 1);
+  assert.deepEqual(opened.frames, []);
+  assert.deepEqual(h.entries, []);
+});
+
+test('invalid project default reports an error without slash-command fallback', async t => {
+  const h = await harness(t); h.plan('valid.md'); h.config({ default_plan: 'missing.md' });
+  const opened = await h.open();
+  assert.deepEqual(opened.frames, []);
+  assert.match(opened.notices[0].message, /Invalid/);
+  assert.equal(opened.notices[0].type, 'error');
+  assert.deepEqual(h.entries, []);
+});
+
+test('incomplete slash-command discovery requires explicit selection even for one candidate', async t => {
+  const h = await harness(t); h.plan('plan.md', 'Incomplete discovery');
+  fs.mkdirSync(path.join(h.dir, 'deep/a/b/c/d/e/f'), { recursive: true });
+  let selections = 0;
+  const opened = await h.open('', { select: async (_title, options) => { selections++; return options[0]; } });
+  assert.equal(selections, 1);
+  assert.ok(opened.notices.some(item => /incomplete/i.test(item.message)));
+  assert.match(opened.frames[0], /Incomplete discovery/);
+});
+
+test('a discovered file deleted during selection is not offered recreation', async t => {
+  const h = await harness(t), chosen = h.plan('first.md'); h.plan('second.md');
+  const opened = await h.open('', { select: async (_title, options) => {
+    fs.rmSync(chosen.path);
+    return options.find(option => option.includes('first.md'));
+  } });
+  assert.deepEqual(opened.frames, []);
+  assert.match(opened.notices[0].message, /no longer exists/);
+  assert.deepEqual(h.entries, []);
+});
+
+test('a discovered file replaced during selection is not silently adopted', async t => {
+  const h = await harness(t), chosen = h.plan('first.md'); h.plan('second.md');
+  const opened = await h.open('', { select: async (_title, options) => {
+    fs.rmSync(chosen.path); fs.rmSync(core.markdownStatePath(chosen.path));
+    h.plan('first.md', 'Replacement');
+    return options.find(option => option.includes('first.md'));
+  } });
+  assert.deepEqual(opened.frames, []);
+  assert.match(opened.notices[0].message, /Specify the path explicitly/);
+  assert.deepEqual(h.entries, []);
+});
 
 test('discovery of no plan leaves files and session untouched', async t => {
   const h = await harness(t);

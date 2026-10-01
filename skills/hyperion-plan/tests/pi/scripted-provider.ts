@@ -1,11 +1,13 @@
 // Test-only provider. No network or credentials; it asserts the actual model request.
 import * as fs from "node:fs";
 import { createAssistantMessageEventStream, getCurrentTools, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
+import { workflowFixture } from './workflow-fixture';
 
 export default function (pi) {
   const log = (event) => {
     if (process.env.HYPERION_TEST_TRACE) fs.appendFileSync(process.env.HYPERION_TEST_TRACE, JSON.stringify(event) + "\n");
   };
+  const workflow = workflowFixture(pi, log);
   pi.on("session_start", (_event, ctx) => log({ event: "session_start", mode: ctx.mode, tools: pi.getActiveTools() }));
   pi.on("tool_result", event => log({ event: "tool_result", name: event.toolName, details: event.details, isError: event.isError }));
   pi.on("agent_settled", (_event, ctx) => log({ event: "settled", idle: ctx.isIdle() }));
@@ -27,9 +29,10 @@ export default function (pi) {
           options?.signal?.throwIfAborted();
           stream.push({ type: "start", partial: message });
           const last = context.messages.at(-1);
-          if (last?.role === "toolResult") {
-            if (last.isError) throw new Error(`Tool failed: ${JSON.stringify(last.content)}`);
-            const text = "Plan request accepted. Ending the turn for the native screen.";
+          const response = workflow?.(context.messages);
+          if (typeof response === 'string' || (!response && last?.role === "toolResult")) {
+            if (last?.isError) throw new Error(`Tool failed: ${JSON.stringify(last.content)}`);
+            const text = typeof response === 'string' ? response : "Plan request accepted. Ending the turn for the native screen.";
             message.content = [{ type: "text", text: "" }];
             stream.push({ type: "text_start", contentIndex: 0, partial: message });
             message.content[0].text = text;
@@ -37,7 +40,7 @@ export default function (pi) {
             stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
           } else {
             // Deterministic routing is deliberate: this tests integration, not LLM understanding.
-            const toolCall = { type: "toolCall", id: `open-${Date.now()}`, name: "hyperion_plan",
+            const toolCall = response ?? { type: "toolCall", id: `open-${Date.now()}`, name: "hyperion_plan",
               arguments: { action: "open" } };
             message.content = [toolCall];
             stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });

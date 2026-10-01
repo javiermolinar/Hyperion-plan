@@ -1,4 +1,6 @@
 import * as fs from "node:fs";
+import { assertPiWaveCompletions } from "./pi/wave-checkpoint";
+import { assertPiReviewCompletions } from "./pi/review-checkpoint";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -306,6 +308,10 @@ async function main() {
     else {
       plan = revise(current!, read(arg("input")!) as Plan, revision!);
       changed = true;
+    }
+    if (changed && current) {
+      assertPiWaveCompletions(p, current, plan, actor);
+      assertPiReviewCompletions(p, current, plan, actor);
     }
     if (dryRun) {
       console.log(

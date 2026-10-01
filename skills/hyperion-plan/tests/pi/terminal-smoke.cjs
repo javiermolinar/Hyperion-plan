@@ -34,6 +34,13 @@ Sleep 5s
 Show
 Set TypingSpeed 50ms
 Ctrl+u
+Type "/hyperion-plan"
+Sleep 500ms
+Enter
+Sleep 2s
+Screenshot discovered.png
+Escape
+Sleep 1s
 Type "/reload"
 Sleep 500ms
 Enter
@@ -84,5 +91,5 @@ assert.match(terminal, /Runtime overlay regression/);
 assert.match(terminal, /HYPERION.*PROGRESS/, 'inline progress is visible without an overlay');
 assert.doesNotMatch(terminal, /VIEW ONLY.*Pi busy/, 'prompted overlay is editable after settlement');
 assert.equal(core.loadMarkdown(path.join(workspace, 'plan.md'))[0].execution, undefined);
-for (const name of ['overlay.png', 'inline.png', 'reopened.png']) assert.ok(fs.statSync(path.join(output, name)).size > 1000);
-console.log('PASS: real Pi reload, model tool exposure, prompted editable overlay, bound reopen; no implementation approval.');
+for (const name of ['discovered.png', 'overlay.png', 'inline.png', 'reopened.png']) assert.ok(fs.statSync(path.join(output, name)).size > 1000);
+console.log('PASS: real Pi cold command discovery, reload, model tool exposure, prompted editable overlay, bound reopen; no implementation approval.');

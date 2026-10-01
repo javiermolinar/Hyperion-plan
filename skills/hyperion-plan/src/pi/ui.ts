@@ -1,7 +1,6 @@
 import {
   applyOperations,
   prerequisites,
-  stepFingerprint,
   type Operation,
   type Plan,
   type Step,
@@ -72,8 +71,8 @@ export class PlanScreenState {
     this.actorId = actorId;
     this.readOnly = readOnly;
     this.focusedStepId = snapshot.plan.steps[0]?.id;
-    if (readOnly) this.notice = "View only: Pi is busy. No actions are queued or sent.";
-    else if (snapshot.refresh_required) this.notice = "Markdown changed outside Hyperion. Press g to refresh before writing.";
+    if (readOnly) this.notice = "Pi is busy. Run and plan requests will be queued for the next turn.";
+    else if (snapshot.refresh_required) this.notice = "Markdown changed. The agent will reconcile it when you submit a request.";
     else if (this.ownerMismatch) this.notice = `Plan is owned by ${snapshot.plan.execution_owner}; this Pi session cannot write it.`;
     else if (snapshot.plan.execution?.selected_step_ids.length)
       this.notice = "A saved selection exists, but it is not resumed. Select work and press Run explicitly.";
@@ -102,14 +101,14 @@ export class PlanScreenState {
   }
 
   get mutationBlocker(): string | undefined {
-    if (this.readOnly) return "Pi is busy; this screen is view-only and nothing will be queued.";
-    if (this.snapshot.refresh_required) return "Refresh external Markdown changes before writing.";
+    if (this.readOnly) return "Pi is busy; defer canonical admission to the queued turn.";
+    if (this.snapshot.refresh_required) return "The agent must reconcile external Markdown before writing.";
     if (this.ownerMismatch) return `Plan belongs to ${this.plan.execution_owner}; continue in its owning session.`;
     if (this.plan.handovers?.some(item => ["requested", "prepared", "blocked"].includes(item.state)))
-      return "An ownership handover is active. Pi cannot write until a supported host resolves it.";
+      return "An ownership handover is active. Inspect/resume its recorded destination before new work.";
     if (this.plan.plan_reviews?.some(item => item.state === "requested" || item.state === "running"))
       return "An independent plan review is active. Wait for its findings before writing.";
-    if (this.staleDraft) return "A newer canonical revision exists. The local draft is preserved; discard it or reconcile it before saving.";
+    if (this.staleDraft) return "A newer canonical revision exists; the agent must reconcile the preserved draft before saving.";
     return undefined;
   }
 
@@ -118,9 +117,7 @@ export class PlanScreenState {
   }
 
   get runBlocker(): string | undefined {
-    const common = this.editBlocker;
-    if (common) return common;
-    return this.selectionProblem();
+    return this.selectedStepIds.length ? undefined : "Select work with Space or click its checkbox.";
   }
 
   setNotice(message: string): void { this.notice = message; }
@@ -129,9 +126,9 @@ export class PlanScreenState {
     if (this.readOnly === busy) return;
     this.readOnly = busy;
     this.notice = busy
-      ? "View only: Pi is busy. Drafts are preserved; no work is queued."
+      ? "Pi is busy. Drafts are preserved; explicit requests queue for the next turn."
       : this.staleDraft
-        ? "Pi is idle. The preserved draft conflicts with newer canonical content; reconcile before saving."
+        ? "Pi is idle. The agent will reconcile the preserved draft when submitted."
         : "Pi is idle. Editing is available; saved work has not been resumed.";
   }
 
@@ -142,14 +139,14 @@ export class PlanScreenState {
       this.draftConflict = this.draftBaseRevision !== snapshot.plan.revision ||
         this.draftBaseDigest !== snapshot.source_digest;
       this.notice = this.draftConflict
-        ? `Canonical plan content no longer matches the draft from r${this.draftBaseRevision}; the draft is preserved but cannot be saved yet.`
+        ? `Draft from r${this.draftBaseRevision} is preserved; the agent will reconcile it on Save or Run.`
         : snapshot.refresh_required
-          ? "Markdown still needs refresh. The staged draft is preserved."
+          ? "External Markdown will be reconciled on submission. The staged draft is preserved."
           : "Canonical snapshot refreshed; staged draft is preserved.";
     } else {
       this.reconcileSelection(previous, snapshot.plan);
       this.notice = snapshot.refresh_required
-        ? "Markdown changed outside Hyperion. Press g to refresh before writing."
+        ? "Markdown changed outside Hyperion. The agent will reconcile it on submission."
         : snapshot.export_warning ?? "Plan refreshed from the canonical file.";
     }
     this.keepFocus();
@@ -193,7 +190,7 @@ export class PlanScreenState {
     this.draftConflict = baseRevision !== this.plan.revision || baseDigest !== this.snapshot.source_digest;
     this.keepFocus();
     this.notice = this.draftConflict
-      ? `Restored draft from r${baseRevision}, but canonical content has changed. Reconcile before saving.`
+      ? `Restored draft from r${baseRevision}; the agent will reconcile newer canonical content on submission.`
       : `Restored ${operations.length} unsaved plan edit(s) from this Pi session.`;
   }
 
@@ -223,14 +220,12 @@ export class PlanScreenState {
   }
 
   private reconcileSelection(previous: Plan, next: Plan): void {
-    const oldById = new Map(previous.steps.map(step => [step.id, step]));
     const nextById = new Map(next.steps.map(step => [step.id, step]));
     for (const id of [...this.selected]) {
-      const oldStep = oldById.get(id), nextStep = nextById.get(id);
-      if (!oldStep || !nextStep || nextStep.status === "completed" ||
-        (nextStep.kind && nextStep.kind !== "implementation") ||
-        stepFingerprint(oldStep).scope !== stepFingerprint(nextStep).scope)
-        this.selected.delete(id);
+      const step = nextById.get(id);
+      // Refresh is not a user deselection. Run carries displayed requirements
+      // for coordinator reconciliation, including reviews and changed scopes.
+      if (!step || step.status === "completed") this.selected.delete(id);
     }
   }
 
@@ -258,81 +253,31 @@ export class PlanScreen implements Component, Focusable {
 
   private dispatch(type: PlanScreenAction["type"]): void {
     const step = this.state.focusedStep;
-    if (type === "close") this.done({ type });
+    if (type === "close" || type === "refresh") this.done({ type });
     else if (type === "run") {
-      const reason = this.state.runBlocker;
-      if (reason) { this.state.setNotice(reason); this.refresh(); return; }
+      if (this.state.runBlocker) { this.state.setNotice(this.state.runBlocker); this.refresh(); return; }
       this.done({ type, selectedStepIds: this.state.selectedStepIds });
-    } else if (type === "ask") {
-      if (this.state.mutationBlocker || this.state.plan.lifecycle === "finished") {
-        this.state.setNotice(this.state.mutationBlocker ?? "Reopen the finished plan before asking about it.");
-        this.refresh(); return;
-      }
-      if (this.state.dirty) { this.state.setNotice("Save or discard the current draft before asking Pi."); this.refresh(); return; }
-      if (step) this.done({ type, stepId: step.id });
-      else { this.state.setNotice("Add a step before asking about one."); this.refresh(); }
     } else if (type === "review") {
-      if (this.state.editBlocker || this.state.dirty) {
-        this.state.setNotice(this.state.editBlocker ?? "Save or discard the current draft before checking plan freshness.");
-        this.refresh(); return;
-      }
-      const targets = this.state.selectedStepIds.length
-        ? this.state.selectedStepIds
+      const targets = this.state.selectedStepIds.length ? this.state.selectedStepIds
         : this.state.displayPlan.steps.filter(item => item.status !== "completed").map(item => item.id);
       if (!targets.length) { this.state.setNotice("There are no unfinished steps to review."); this.refresh(); return; }
       this.done({ type, targetStepIds: targets });
-    } else if (type === "decompose") {
-      if (this.state.editBlocker || this.state.dirty || !step || step.status !== "pending") {
-        this.state.setNotice(this.state.editBlocker ?? (this.state.dirty ? "Save or discard the current draft before decomposition." : "Only pending steps can be decomposed."));
-        this.refresh(); return;
-      }
-      this.done({ type, stepId: step.id });
-    } else if (type === "edit") {
-      if (this.state.editBlocker || !step) { this.state.setNotice(this.state.editBlocker ?? "Add a step first."); this.refresh(); return; }
-      this.done({ type, stepId: step.id });
     } else if (type === "add") {
-      if (this.state.editBlocker) { this.state.setNotice(this.state.editBlocker); this.refresh(); return; }
       this.done({ type, ...(step ? { afterStepId: step.id } : {}), ...(step?.milestone ? { milestone: step.milestone } : {}) });
-    } else if (type === "note") {
-      if (this.state.editBlocker || !step) { this.state.setNotice(this.state.editBlocker ?? "Add a step first."); this.refresh(); return; }
+    } else if (type === "ask" || type === "edit" || type === "note" || type === "remove" || type === "decompose") {
+      if (!step) { this.state.setNotice("Add a step first."); this.refresh(); return; }
       this.done({ type, stepId: step.id });
-    } else if (type === "remove") {
-      if (this.state.editBlocker || !step || step.status !== "pending") {
-        this.state.setNotice(this.state.editBlocker ?? "Only pending steps can be removed."); this.refresh(); return;
-      }
-      this.done({ type, stepId: step.id });
-    } else if (type === "save") {
-      if (this.state.mutationBlocker) { this.state.setNotice(this.state.mutationBlocker); this.refresh(); return; }
+    } else if (type === "save" || type === "discard") {
       if (!this.state.dirty) { this.state.setNotice("No unsaved plan edits."); this.refresh(); return; }
       this.done({ type });
-    } else if (type === "discard") {
-      if (this.state.dirty) this.done({ type });
-      else { this.state.setNotice("There is no plan draft to discard."); this.refresh(); }
-    } else if (type === "refresh") {
-      const unsupportedHandover = this.state.plan.handovers?.some(item => ["requested", "prepared", "blocked"].includes(item.state));
-      const activeReview = this.state.plan.plan_reviews?.some(item => item.state === "requested" || item.state === "running");
-      if (this.state.readOnly || unsupportedHandover || activeReview) {
-        const reason = this.state.readOnly ? "Pi is busy; refresh is not queued."
-          : unsupportedHandover ? "An ownership handover is active; Pi cannot refresh or write it safely."
-            : "An independent plan review is active; wait before refreshing or writing.";
-        this.state.setNotice(reason);
-        this.refresh(); return;
-      }
-      this.done({ type });
     } else if (type === "lifecycle") {
-      if (this.state.mutationBlocker || this.state.dirty) {
-        this.state.setNotice(this.state.mutationBlocker ?? "Save or discard the current draft before finishing or reopening the plan.");
-        this.refresh(); return;
-      }
-      const lifecycle = this.state.plan.lifecycle === "finished" ? "reopen" : "finish";
-      this.done({ type, lifecycle });
+      this.done({ type, lifecycle: this.state.plan.lifecycle === "finished" ? "reopen" : "finish" });
     }
   }
 
   private dispatchMove(direction: -1 | 1): void {
     const step = this.state.focusedStep;
-    if (!step || step.status !== "pending") { this.state.setNotice("Only pending steps can be reordered."); this.refresh(); return; }
-    if (this.state.editBlocker) { this.state.setNotice(this.state.editBlocker); this.refresh(); return; }
+    if (!step) { this.state.setNotice("Add a step first."); this.refresh(); return; }
     this.done({ type: "move", stepId: step.id, direction });
   }
 
@@ -391,7 +336,9 @@ export class PlanScreen implements Component, Focusable {
     if (!hit) return undefined;
     if (event.type === "press") return { handled: true, focus: true, render: false };
     hit.action();
-    return { handled: true, focus: true, render: true };
+    // The click may synchronously finish ctx.ui.custom() and dispose this screen.
+    // Focus was acquired on press; requesting it again could focus a dead overlay.
+    return { handled: true, render: true };
   }
 
   render(width: number): string[] {
@@ -417,7 +364,21 @@ export class PlanScreen implements Component, Focusable {
 
     const inner = w - 4, wide = w >= 100;
     const availableRows = Math.floor(this.height() * 0.95);
-    const bodyHeight = Math.max(1, Math.min(25, availableRows - 15));
+    const controls = this.controls(wide);
+    const controlRows: typeof controls[] = [];
+    let used = 0;
+    for (const control of controls) {
+      const size = visibleWidth(control.label);
+      if (!controlRows.length || used + 2 + size > inner) {
+        controlRows.push([]);
+        used = 0;
+      }
+      controlRows[controlRows.length - 1]!.push(control);
+      used += (used ? 2 : 0) + size;
+    }
+    const bodyHeight = Math.min(25, availableRows - 13 - controlRows.length);
+    if (bodyHeight < 1) return [accent("HYPERION / PLAN"), muted("Enlarge terminal; Esc closes.")]
+      .slice(0, availableRows).map(text => fit(text, w));
     const lines: string[] = [];
     const row = (text: string) => lines.push(rowBorder + fit(text, inner) + theme.fg("border", " │"));
     const rule = () => lines.push(theme.fg("border", `├${"─".repeat(w - 2)}┤`));
@@ -428,7 +389,8 @@ export class PlanScreen implements Component, Focusable {
     const barWidth = Math.min(18, Math.max(0, Math.floor(inner / 5)));
     const doneBar = plan.steps.length ? Math.round(barWidth * completed / plan.steps.length) : 0;
     row(theme.fg("success", "━".repeat(doneBar)) + muted("─".repeat(barWidth - doneBar)) + `  ${completed}/${plan.steps.length} complete` + (state.plan.execution ? muted(` · saved ${state.plan.execution.state} scope ${state.plan.execution.selected_step_ids.length}`) : muted(" · no saved approval")));
-    const meta = state.readOnly ? "VIEW ONLY · Pi busy · nothing queued" : state.snapshot.refresh_required ? "EXTERNAL EDIT · refresh required" : state.ownerMismatch ? "VIEW ONLY · another session owns execution" : wide ? "One canonical plan · explicit Run · current Pi session executes sequentially" : "Selection is not approval · Run is sequential in this Pi session";
+    const mode = state.plan.execution ? state.plan.execution.execution_mode ?? "sequential" : "auto";
+    const meta = state.readOnly ? "Pi busy · requests queue for the next turn" : wide ? `Select → Run · agent reconciles readiness · ${mode}` : "Select → Run · agent handles readiness";
     row(muted(meta));
     rule();
 
@@ -461,7 +423,7 @@ export class PlanScreen implements Component, Focusable {
       const tags = [status];
       if (step.complexity) tags.push(`${step.complexity} complexity`);
       if (step.reasoning_effort) tags.push(`effort ${step.reasoning_effort}`);
-      if (step.parallel_group) tags.push(`group ${step.parallel_group} · sequential here`);
+      if (step.parallel_group) tags.push(`group ${step.parallel_group} · assess conflicts`);
       if (step.needs_replanning) tags.push("needs replanning");
       else if (step.review_state === "needs_review") tags.push("changed · review advisory");
       if (step.depends_on?.length) tags.push(`needs ${step.depends_on.join(",")}`);
@@ -495,32 +457,15 @@ export class PlanScreen implements Component, Focusable {
       : muted("No steps selected · saved scopes never resume automatically");
     row(selectedLabel + (state.dirty ? muted(` · ${state.draftOperations.length} draft edit(s)`) : ""));
 
-    const controls: { label: string; action: () => void; enabled: boolean }[] = [
-      { label: "[r] Run", action: () => this.dispatch("run"), enabled: !state.runBlocker },
-      { label: "[v] Check plan", action: () => this.dispatch("review"), enabled: !state.editBlocker && !state.dirty && state.plan.lifecycle !== "finished" },
-      { label: "[a] Ask", action: () => this.dispatch("ask"), enabled: !state.mutationBlocker && !state.dirty && state.plan.lifecycle !== "finished" && !!state.focusedStep },
-      { label: "[e] Edit", action: () => this.dispatch("edit"), enabled: !state.editBlocker && !!state.focusedStep },
-      { label: "[n] Add", action: () => this.dispatch("add"), enabled: !state.editBlocker },
-      { label: "[m] Note", action: () => this.dispatch("note"), enabled: !state.editBlocker && !!state.focusedStep },
-      { label: "[d] Split", action: () => this.dispatch("decompose"), enabled: !state.editBlocker && !state.dirty && state.focusedStep?.status === "pending" },
-      { label: "[x] Remove", action: () => this.dispatch("remove"), enabled: !state.editBlocker && state.focusedStep?.status === "pending" },
-      { label: "[s] Save", action: () => this.dispatch("save"), enabled: state.dirty && !state.mutationBlocker },
-      { label: "[z] Discard", action: () => this.dispatch("discard"), enabled: state.dirty },
-      { label: state.plan.lifecycle === "finished" ? "[f] Reopen" : "[f] Finish", action: () => this.dispatch("lifecycle"), enabled: !state.mutationBlocker && !state.dirty },
-      { label: "[g] Refresh", action: () => this.dispatch("refresh"), enabled: !state.readOnly },
-      { label: "[q] Close", action: () => this.dispatch("close"), enabled: true },
-    ];
-    const controlRows = [controls.slice(0, 7), controls.slice(7)];
     for (const controlRow of controlRows) {
       let x = 2;
       const y = lines.length;
       const labels: string[] = [];
       for (const control of controlRow) {
-        const label = control.enabled ? accent(control.label) : muted(control.label);
-        labels.push(label);
-        if (control.enabled && x + control.label.length <= w - 2)
-          this.hits.push({ x, y, width: control.label.length, action: control.action });
-        x += control.label.length + 2;
+        labels.push(control.enabled ? accent(control.label) : muted(control.label));
+        if (control.enabled)
+          this.hits.push({ x, y, width: visibleWidth(control.label), action: control.action });
+        x += visibleWidth(control.label) + 2;
       }
       row(labels.join("  "));
     }
@@ -535,15 +480,31 @@ export class PlanScreen implements Component, Focusable {
     return lines.map(line => fit(line, w));
   }
 
+  private controls(wide: boolean): { label: string; action: () => void; enabled: boolean }[] {
+    const state = this.state;
+    return [
+      ...(!wide ? [{ label: state.view === "steps" ? "[Tab] Details" : "[Tab] Steps", enabled: true,
+        action: () => { state.view = state.view === "steps" ? "details" : "steps"; this.refresh(); } }] : []),
+      { label: "[r] Run", action: () => this.dispatch("run"), enabled: !state.runBlocker },
+      { label: "[n] Add", action: () => this.dispatch("add"), enabled: true },
+      { label: "[a] Ask", action: () => this.dispatch("ask"), enabled: !!state.focusedStep },
+      { label: "[e] Edit", action: () => this.dispatch("edit"), enabled: !!state.focusedStep },
+      { label: "[v] Check plan", action: () => this.dispatch("review"), enabled: state.displayPlan.steps.some(s => s.status !== "completed") },
+      { label: "[m] Note", action: () => this.dispatch("note"), enabled: !!state.focusedStep },
+      { label: "[d] Split", action: () => this.dispatch("decompose"), enabled: !!state.focusedStep },
+      { label: "[x] Remove", action: () => this.dispatch("remove"), enabled: !!state.focusedStep },
+      { label: "[s] Save", action: () => this.dispatch("save"), enabled: state.dirty },
+      { label: "[z] Discard", action: () => this.dispatch("discard"), enabled: state.dirty },
+      { label: state.plan.lifecycle === "finished" ? "[f] Reopen" : "[f] Finish", action: () => this.dispatch("lifecycle"), enabled: true },
+      { label: "[g] Refresh", action: () => this.dispatch("refresh"), enabled: true },
+      { label: "[q] Close", action: () => this.dispatch("close"), enabled: true },
+    ];
+  }
+
   private singleLine(value: string): string { return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim(); }
 
   private displayNotice(state: PlanScreenState): string {
-    const blocker = state.dirty && state.staleDraft
-      ? state.mutationBlocker
-      : state.snapshot.refresh_required
-        ? state.mutationBlocker
-        : state.notice;
-    return state.dirty ? `Draft: ${blocker ?? state.notice}` : blocker ?? state.notice;
+    return state.dirty ? `Draft preserved: ${state.notice}` : state.notice;
   }
 
   private detailLines(plan: Plan, step?: Step): string[] {
@@ -571,9 +532,9 @@ export class PlanScreen implements Component, Focusable {
     if (step.milestone) lines.push(...wrap(`Milestone: ${step.milestone}`));
     if (step.complexity) lines.push(...wrap(`Complexity: ${step.complexity}${step.complexity_reason ? ` — ${step.complexity_reason}` : ""}`));
     if (step.reasoning_effort) lines.push(...wrap(`Reasoning effort preference: ${step.reasoning_effort}`));
-    if (step.parallel_group) lines.push(...wrap(`Planned parallel group ${step.parallel_group}; this Pi adapter runs sequentially.`));
+    if (step.parallel_group) lines.push(...wrap(`Planned parallel group ${step.parallel_group} is a hint, not independence evidence. Workers need exact file/read/resource claims; sequential fallback remains available.`));
     if (step.handover_after) lines.push(...wrap(`Suggested handover after this step: ${step.handover_after}`));
-    if (step.kind === "handover") lines.push(theme.fg("warning", "Ownership transfer is not implemented by the first Pi adapter."));
+    if (step.kind === "handover") lines.push(theme.fg("warning", "Requires ready prerequisites, drained source writers and hyperion_handover. Completion follows ownership transfer only."));
     if (step.comments?.length) {
       lines.push("", theme.fg("muted", "NOTES"));
       for (const note of step.comments) {

@@ -155,18 +155,20 @@ test("step-scope edits revoke approval and invalidate dependents without losing 
   assert.equal(plan.steps[1].review_state, "needs_review");
 });
 
-test("local selection is not approval and Run enforces prerequisites, review and handover barriers", async () => {
+test("local selection is intent; readiness stays in canonical admission, not disabled Run",  async () => {
   const [{ PlanScreenState }] = await loadUI();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hyperion-pi-ui-"));
   try {
     const { planPath } = savedPlan(dir);
     const snapshot = await core.loadPlanSnapshot(planPath);
     const busyState = new PlanScreenState(snapshot, "pi-session", true);
-    assert.match(busyState.runBlocker, /Pi is busy/);
+    busyState.toggleSelection("a");
+    assert.equal(busyState.runBlocker, undefined, "busy requests can be queued");
     assert.throws(() => busyState.stage({ type: "update_step", step_id: "a", fields: { title: "Blocked write" } }), /Pi is busy/);
     const state = new PlanScreenState(snapshot, "pi-session", false);
     state.toggleSelection("b");
-    assert.match(state.runBlocker, /Missing prerequisite for b: a/);
+    assert.equal(state.runBlocker, undefined);
+    assert.match(state.selectionProblem(), /Missing prerequisite for b: a/);
     state.toggleSelection("a");
     assert.equal(state.runBlocker, undefined);
     assert.equal(state.plan.execution, undefined);
@@ -182,14 +184,14 @@ test("local selection is not approval and Run enforces prerequisites, review and
     state.acceptSnapshot({ ...snapshot, plan: advanced, summary: core.summary(advanced) });
     assert.equal(state.staleDraft, true);
     assert.equal(state.displayPlan.steps[1].title, "Draft title");
-    assert.match(state.mutationBlocker, /draft is preserved/);
+    assert.match(state.mutationBlocker, /preserved draft/);
 
     const sameRevisionState = new PlanScreenState({ ...snapshot, source_digest: "json-before-edit" }, "pi-session", false);
     sameRevisionState.stage({ type: "update_step", step_id: "a", fields: { title: "Another draft" } });
     sameRevisionState.acceptSnapshot({ ...snapshot, source_digest: "json-edited-without-revision-bump" });
     assert.equal(sameRevisionState.plan.revision, snapshot.plan.revision);
     assert.equal(sameRevisionState.staleDraft, true);
-    assert.match(sameRevisionState.mutationBlocker, /draft is preserved/);
+    assert.match(sameRevisionState.mutationBlocker, /preserved draft/);
 
     const reviewPlan = samplePlan([
       { id: "a", title: "Implementation", status: "pending" },
@@ -198,8 +200,9 @@ test("local selection is not approval and Run enforces prerequisites, review and
     ]);
     const reviewState = new PlanScreenState({ ...snapshot, plan: reviewPlan, summary: core.summary(reviewPlan) }, "pi-session", false);
     reviewState.toggleSelection("b");
-    assert.equal(reviewState.selected.size, 0);
-    assert.match(reviewState.notice, /Review barrier first/);
+    assert.deepEqual(reviewState.selectedStepIds, ["b"]);
+    assert.equal(reviewState.runBlocker, undefined);
+    assert.match(reviewState.selectionProblem(), /Missing prerequisite/);
 
     const handoverPlan = samplePlan([
       { id: "a", title: "Before transfer", status: "pending" },
@@ -208,12 +211,69 @@ test("local selection is not approval and Run enforces prerequisites, review and
     ]);
     const handoverState = new PlanScreenState({ ...snapshot, plan: handoverPlan, summary: core.summary(handoverPlan) }, "pi-session", false);
     handoverState.toggleSelection("a");
-    assert.match(handoverState.runBlocker, /handover checkpoint/);
+    assert.equal(handoverState.runBlocker, undefined, 'explicit Run may include the existing trailing handover checkpoint');
     handoverState.toggleSelection("b");
-    assert.match(handoverState.notice, /Handover checkpoint first/);
+    assert.equal(handoverState.runBlocker, undefined);
+    assert.deepEqual(handoverState.selectedStepIds, ['a', 'b']);
+    assert.equal(handoverState.plan.execution, undefined, 'selection is not transfer or execution approval');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("review intent stays selectable before reconciliation while execution blockers remain enforced",  async (t) => {
+  const [{ PlanScreenState }] = await loadUI();
+  const dir = scratch(t);
+  const { planPath } = savedPlan(dir, [
+    { id: "a", title: "Implementation", status: "completed" },
+    { id: "r", title: "Independent review", kind: "review", status: "in_progress",
+      depends_on: ["a"], checks: ["Inspect changes"], review_state: "needs_review",
+      review_note: "Implementation changed after the prior review.",
+      progress_note: "Prior review settled; report covers pre-fix code.",
+      blocked_by: "Awaiting a fresh explicit review request." },
+    { id: "b", title: "Later work", status: "pending", depends_on: ["r"] },
+  ]);
+  const snapshot = await core.loadPlanSnapshot(planPath);
+  const blocked = new PlanScreenState(snapshot, "pi-session", false);
+  blocked.toggleSelection("r");
+  assert.deepEqual(blocked.selectedStepIds, ["r"]);
+  assert.equal(blocked.runBlocker, undefined);
+  assert.match(blocked.selectionProblem(), /blocked/);
+
+  // Reconcile the incorrect data, not the execution guard. Preserve history and
+  // acceptance; neither a saved correction nor a checkbox authorizes review.
+  const replacement = core.clone(snapshot.plan);
+  delete replacement.steps[1].blocked_by;
+  replacement.steps[1].review_note = "Post-fix independent evidence is still required.";
+  const plan = core.revise(snapshot.plan, replacement, snapshot.plan.revision);
+  const review = plan.steps[1];
+  assert.equal(review.status, "in_progress");
+  assert.equal(review.progress_note, snapshot.plan.steps[1].progress_note);
+  assert.equal(review.review_state, "needs_review");
+  assert.equal(plan.execution, undefined);
+  const state = new PlanScreenState({ ...snapshot, plan, summary: core.summary(plan) }, "pi-session", false);
+  state.toggleSelection("r");
+  assert.deepEqual(state.selectedStepIds, ["r"]);
+  assert.equal(state.runBlocker, undefined);
+  assert.equal(state.plan.execution, undefined);
+  state.acceptSnapshot({ ...snapshot, plan, summary: core.summary(plan) });
+  assert.deepEqual(state.selectedStepIds, ["r"], "unchanged refresh must preserve a selected review");
+  state.toggleSelection("b");
+  assert.deepEqual(state.selectedStepIds, ["r", "b"]);
+  const approved = core.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision,
+    request_id: "post-fix-review", intent: "implement", operations: [], selected_step_ids: ["r"] })[0];
+  assert.deepEqual(approved.execution.selected_step_ids, ["r"]);
+  assert.equal(approved.steps[1].status, "in_progress");
+
+  const unavailable = core.clone(plan);
+  unavailable.steps[1].blocked_by = "Earlier reviewer has unknown surviving writers.";
+  const held = new PlanScreenState({ ...snapshot, plan: unavailable, summary: core.summary(unavailable) }, "pi-session", false);
+  held.toggleSelection("r");
+  assert.deepEqual(held.selectedStepIds, ["r"]);
+  assert.equal(held.runBlocker, undefined);
+  assert.match(held.selectionProblem(), /blocked/);
+  assert.throws(() => core.applyRequest(unavailable, { plan_id: unavailable.plan_id, base_revision: unavailable.revision,
+    request_id: "unsafe-review", intent: "implement", operations: [], selected_step_ids: ["r"] }), /blocked/);
 });
 
 test("registers an explicit native command and keeps non-TUI behavior available", async () => {
@@ -298,7 +358,16 @@ test("session drafts survive screen closure and are cleared after save", async (
     };
   };
 
-  await pi.command.options.handler(planPath, context(["edit", "close"]));
+  const seedDraft = async () => {
+    const snapshot = await core.loadPlanSnapshot(planPath);
+    entries.push({ type: "custom", customType: "hyperion-plan.draft", data: {
+      path: snapshot.path, plan_id: snapshot.plan.plan_id, base_revision: snapshot.plan.revision,
+      base_digest: snapshot.source_digest, base_plan: snapshot.plan,
+      operations: [{ type: "update_step", step_id: "a", fields: { title: "Draft rename" } }],
+    } });
+  };
+  await seedDraft();
+  await pi.command.options.handler(planPath, context(["close"]));
   assert.equal((await core.loadPlanSnapshot(planPath)).plan.steps[0].title, "First");
   assert.ok(entries.some(entry => entry.customType === "hyperion-plan.draft" && entry.data.operations.length === 1));
 
@@ -318,7 +387,7 @@ test("session drafts survive screen closure and are cleared after save", async (
   assert.doesNotMatch(renders[0], /UNSAVED EDITS|STALE DRAFT/);
   assert.match(renders[0], /First/);
 
-  await pi.command.options.handler("", context(["edit", "close"]));
+  await seedDraft();
   assert.ok(entries.at(-1).data.operations.length === 1);
   renders.length = 0;
   await pi.command.options.handler("", context(["save", "close"]));
@@ -355,8 +424,8 @@ test("native screen remains within narrow and resized overlays and keyboard cont
   assert.deepEqual(state.selectedStepIds, ["b"]);
   assert.equal(action, undefined);
   screen.handleInput("r");
-  assert.equal(action, undefined); // The missing prerequisite is explained; no request is emitted.
-  assert.match(state.notice, /Missing prerequisite for b: a/);
+  assert.deepEqual(action, { type: "run", selectedStepIds: ["b"] }); // Coordinator reconciles readiness.
+  assert.match(state.selectionProblem(), /Missing prerequisite for b: a/);
   screen.handleInput("\x1b");
   assert.equal(action?.type, "close");
 });

@@ -18,7 +18,7 @@ async function harness(t, mode = "tui") {
   let tool, idle = false, session = "tool-session", counter = 0;
   const pi = {
     registerCommand(_name, value) { this.command = value; },
-    registerTool(value) { tool = value; },
+    registerTool(value) { if (value.name === 'hyperion_plan') tool = value; },
     registerMessageRenderer() {},
     on(name, handler) {
       if (!handlers.has(name)) handlers.set(name, []);
@@ -281,15 +281,15 @@ test('overlay opened while busy becomes editable after settlement and retains lo
   });
   const opened = h.command.handler(h.planPath, h.ctx);
   await new Promise(resolve => setTimeout(resolve, 20));
-  assert.match(screen.render(120).join('\n'), /VIEW ONLY/);
+  assert.match(screen.render(120).join('\n'), /Pi busy · requests queue/);
   await h.settle();
-  assert.doesNotMatch(screen.render(120).join('\n'), /VIEW ONLY/);
+  assert.doesNotMatch(screen.render(120).join('\n'), /Pi busy · requests queue/);
   screen.handleInput(' ');
   assert.match(screen.render(120).join('\n'), /1 selected/);
   assert.equal((await h.read()).plan.execution, undefined);
   h.setIdle(false);
   await h.events.get('agent_start')({}, h.ctx);
-  assert.match(screen.render(120).join('\n'), /VIEW ONLY/);
+  assert.match(screen.render(120).join('\n'), /Pi busy · requests queue/);
   close({ type: 'close' });
   await opened;
 });
