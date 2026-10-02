@@ -1,6 +1,4 @@
 import * as fs from "node:fs";
-import { assertPiWaveCompletions } from "./pi/wave-checkpoint";
-import { assertPiReviewCompletions } from "./pi/review-checkpoint";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -161,7 +159,9 @@ async function main() {
         let dirty: boolean;
         [current, dirty, sourceDigest] = loadMarkdown(p);
         refreshRequired = dirty;
-        if (writesPlan) assertExecutionOwner(current, actor);
+        // Non-read-only inspection/exports can refresh bookkeeping or save recovery.
+        // Fence those writes too, before touching any owned Markdown artifacts.
+        if (writesPlan || !readOnly) assertExecutionOwner(current, actor);
         if (readOnly) {
           const stateAfter = fs.existsSync(markdownStatePath(p))
             ? readText(markdownStatePath(p))
@@ -310,8 +310,6 @@ async function main() {
       changed = true;
     }
     if (changed && current) {
-      assertPiWaveCompletions(p, current, plan, actor);
-      assertPiReviewCompletions(p, current, plan, actor);
     }
     if (dryRun) {
       console.log(

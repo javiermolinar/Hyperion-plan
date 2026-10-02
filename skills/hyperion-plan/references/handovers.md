@@ -2,7 +2,7 @@
 
 A context handover keeps one canonical plan and transfers execution to a fresh Codex task. It avoids carrying the full conversation into the next context. It is not a conversation fork, a new plan, a prediction of compaction, or new implementation approval. Planned checkpoints are automatic within an approved run and agent-mediated: no context-usage monitor or automatic pre-compaction hook is installed. Actual latency savings are not guaranteed.
 
-Pi uses [native coordinator handover](pi-handover.md): `hyperion_handover` prepares a persistent read-only destination, verifies readiness, transfers canonical ownership and navigates through public command APIs. Current permission, source settlement and relevant code claims are required. Offline SDK and installed-terminal fixtures cover the workflow; they are not live-model evidence. Use that Pi adapter rather than the Codex task-creation instructions below.
+Pi handoff is [host-owned](pi-handover.md). Hyperion no longer creates or navigates destination sessions. Use an explicitly authorized host facility only if it supports verified source settlement, read-only destination readiness and the shared ownership protocol below. Otherwise leave the checkpoint incomplete. Historical source-owner fences and canonical transfer records remain; never impersonate an old owner or relaunch uncertain work. The Codex task-creation commands below are not Pi APIs.
 
 ## Suggested boundaries and actual events
 

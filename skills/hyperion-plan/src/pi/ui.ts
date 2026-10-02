@@ -1,4 +1,11 @@
+import * as path from "node:path";
+import * as fs from "node:fs";
+import type { AgentSessionEvent, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Text, SelectList, ScrollView } from "@earendil-works/pi-tui";
+import { AGENT_ENTRY, type AgentRecord } from "./subagents";
+import { latestBinding, latestDraft, discoverPlans, bindPlan, persistDraft } from "./context";
 import {
+  digestText, record,
   applyOperations,
   prerequisites,
   type Operation,
@@ -16,7 +23,10 @@ import {
   type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import type { PlanSnapshot } from "../service";
-import { piRunBlocker, piStepBlocker } from "./execution";
+import { piRunBlocker, piStepBlocker, piMutationBlocker, handleScreenAction, loadPlanSnapshot, createPlan, selectedPlanPath, type PlanScreenAction as CoreScreenAction } from "./executor";
+export type PlanScreenAction = CoreScreenAction | { type: "agents" };
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
 
 type Foreground = "accent" | "border" | "muted" | "warning" | "success" | "error" | "dim" | "text";
 type Background = "selectedBg";
@@ -27,22 +37,6 @@ interface ThemeLike {
   bold(text: string): string;
 }
 
-export type PlanScreenAction =
-  | { type: "close" }
-  | { type: "run"; selectedStepIds: string[] }
-  | { type: "ask"; stepId: string }
-  | { type: "review"; targetStepIds: string[] }
-  | { type: "decompose"; stepId: string }
-  | { type: "edit"; stepId: string }
-  | { type: "add"; afterStepId?: string; milestone?: string }
-  | { type: "note"; stepId: string }
-  | { type: "remove"; stepId: string }
-  | { type: "move"; stepId: string; direction: -1 | 1 }
-  | { type: "save" }
-  | { type: "discard" }
-  | { type: "refresh" }
-  | { type: "lifecycle"; lifecycle: "finish" | "reopen" };
-
 type Hit = { x: number; y: number; width: number; action: () => void };
 
 export class PlanScreenState {
@@ -51,7 +45,6 @@ export class PlanScreenState {
   readOnly: boolean;
   selected = new Set<string>();
   focusedStepId?: string;
-  view: "steps" | "details" = "steps";
   listOffset = 0;
   detailOffset = 0;
   notice = "Selection is local until you explicitly press Run.";
@@ -101,15 +94,7 @@ export class PlanScreenState {
   }
 
   get mutationBlocker(): string | undefined {
-    if (this.readOnly) return "Pi is busy; defer canonical admission to the queued turn.";
-    if (this.snapshot.refresh_required) return "The agent must reconcile external Markdown before writing.";
-    if (this.ownerMismatch) return `Plan belongs to ${this.plan.execution_owner}; continue in its owning session.`;
-    if (this.plan.handovers?.some(item => ["requested", "prepared", "blocked"].includes(item.state)))
-      return "An ownership handover is active. Inspect/resume its recorded destination before new work.";
-    if (this.plan.plan_reviews?.some(item => item.state === "requested" || item.state === "running"))
-      return "An independent plan review is active. Wait for its findings before writing.";
-    if (this.staleDraft) return "A newer canonical revision exists; the agent must reconcile the preserved draft before saving.";
-    return undefined;
+    return piMutationBlocker(this.snapshot, this.actorId, this.readOnly, this.staleDraft);
   }
 
   get editBlocker(): string | undefined {
@@ -133,6 +118,8 @@ export class PlanScreenState {
   }
 
   acceptSnapshot(snapshot: PlanSnapshot): void {
+    if (snapshot.plan.plan_id !== this.plan.plan_id)
+      throw new Error("The plan was replaced. Close this screen and select its path explicitly.");
     const previous = this.plan;
     this.snapshot = snapshot;
     if (this.dirty) {
@@ -240,6 +227,7 @@ export class PlanScreen implements Component, Focusable {
   focused = true;
   private hits: Hit[] = [];
   private detailStart = Infinity;
+  private detailTop = Infinity;
 
   constructor(
     private readonly state: PlanScreenState,
@@ -251,66 +239,29 @@ export class PlanScreen implements Component, Focusable {
 
   invalidate(): void {}
 
-  private dispatch(type: PlanScreenAction["type"]): void {
-    const step = this.state.focusedStep;
-    if (type === "close" || type === "refresh") this.done({ type });
-    else if (type === "run") {
+  private dispatch(type: "run" | "close" | "agents"): void {
+    if (type === "run") {
       if (this.state.runBlocker) { this.state.setNotice(this.state.runBlocker); this.refresh(); return; }
       this.done({ type, selectedStepIds: this.state.selectedStepIds });
-    } else if (type === "review") {
-      const targets = this.state.selectedStepIds.length ? this.state.selectedStepIds
-        : this.state.displayPlan.steps.filter(item => item.status !== "completed").map(item => item.id);
-      if (!targets.length) { this.state.setNotice("There are no unfinished steps to review."); this.refresh(); return; }
-      this.done({ type, targetStepIds: targets });
-    } else if (type === "add") {
-      this.done({ type, ...(step ? { afterStepId: step.id } : {}), ...(step?.milestone ? { milestone: step.milestone } : {}) });
-    } else if (type === "ask" || type === "edit" || type === "note" || type === "remove" || type === "decompose") {
-      if (!step) { this.state.setNotice("Add a step first."); this.refresh(); return; }
-      this.done({ type, stepId: step.id });
-    } else if (type === "save" || type === "discard") {
-      if (!this.state.dirty) { this.state.setNotice("No unsaved plan edits."); this.refresh(); return; }
-      this.done({ type });
-    } else if (type === "lifecycle") {
-      this.done({ type, lifecycle: this.state.plan.lifecycle === "finished" ? "reopen" : "finish" });
-    }
+    } else this.done({ type });
   }
 
-  private dispatchMove(direction: -1 | 1): void {
+  private selectFocused(): void {
     const step = this.state.focusedStep;
-    if (!step) { this.state.setNotice("Add a step first."); this.refresh(); return; }
-    this.done({ type: "move", stepId: step.id, direction });
+    if (step) this.state.toggleSelection(step.id);
+    this.refresh();
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.dispatch("close"); return; }
-    const plan = this.state.displayPlan;
-    const index = plan.steps.findIndex(step => step.id === this.state.focusedStepId);
-    if (matchesKey(data, "up") || data === "k") this.moveFocus(index - 1);
-    else if (matchesKey(data, "down") || data === "j") this.moveFocus(index + 1);
-    else if (data === " " || matchesKey(data, "space")) {
-      const step = this.state.focusedStep;
-      if (step) this.state.toggleSelection(step.id);
-      this.refresh();
-    } else if (matchesKey(data, "tab") || matchesKey(data, "return")) {
-      this.state.view = this.state.view === "steps" ? "details" : "steps";
-      this.refresh();
-    } else if (matchesKey(data, "pageDown")) { this.state.detailOffset += 4; this.refresh(); }
+    if (matchesKey(data, "escape")) { this.dispatch("close"); return; }
+    const index = this.state.displayPlan.steps.findIndex(step => step.id === this.state.focusedStepId);
+    if (matchesKey(data, "up")) this.moveFocus(index - 1);
+    else if (matchesKey(data, "down")) this.moveFocus(index + 1);
+    else if (matchesKey(data, "space")) this.selectFocused();
+    else if (matchesKey(data, "return")) this.dispatch("run");
+    else if (matchesKey(data, "a") || matchesKey(data, "shift+a")) this.dispatch("agents");
+    else if (matchesKey(data, "pageDown")) { this.state.detailOffset += 4; this.refresh(); }
     else if (matchesKey(data, "pageUp")) { this.state.detailOffset = Math.max(0, this.state.detailOffset - 4); this.refresh(); }
-    else if (data === "r") this.dispatch("run");
-    else if (data === "v") this.dispatch("review");
-    else if (data === "a") this.dispatch("ask");
-    else if (data === "e") this.dispatch("edit");
-    else if (data === "n") this.dispatch("add");
-    else if (data === "m") this.dispatch("note");
-    else if (data === "d") this.dispatch("decompose");
-    else if (data === "x") this.dispatch("remove");
-    else if (data === "s") this.dispatch("save");
-    else if (data === "z") this.dispatch("discard");
-    else if (data === "g") this.dispatch("refresh");
-    else if (data === "f") this.dispatch("lifecycle");
-    else if (data === "[") this.dispatchMove(-1);
-    else if (data === "]") this.dispatchMove(1);
-    else if (data === "q") this.dispatch("close");
   }
 
   private moveFocus(index: number): void {
@@ -323,7 +274,7 @@ export class PlanScreen implements Component, Focusable {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (event.type === "wheel") {
-      if (event.x >= this.detailStart) this.state.detailOffset = Math.max(0, this.state.detailOffset + (event.wheelDelta ?? 0));
+      if (event.x >= this.detailStart || event.y >= this.detailTop) this.state.detailOffset = Math.max(0, this.state.detailOffset + (event.wheelDelta ?? 0));
       else {
         const index = this.state.displayPlan.steps.findIndex(step => step.id === this.state.focusedStepId);
         this.moveFocus(index + Math.sign(event.wheelDelta ?? 0));
@@ -353,6 +304,7 @@ export class PlanScreen implements Component, Focusable {
     const rowBorder = theme.fg("border", "│ ");
     this.hits = [];
     this.detailStart = Infinity;
+    this.detailTop = Infinity;
     if (w < 42 || this.height() < 20) {
       const compact = [
         accent("HYPERION / PLAN"),
@@ -364,7 +316,7 @@ export class PlanScreen implements Component, Focusable {
 
     const inner = w - 4, wide = w >= 100;
     const availableRows = Math.floor(this.height() * 0.95);
-    const controls = this.controls(wide);
+    const controls = this.controls();
     const controlRows: typeof controls[] = [];
     let used = 0;
     for (const control of controls) {
@@ -396,10 +348,13 @@ export class PlanScreen implements Component, Focusable {
 
     const leftWidth = wide ? Math.floor((inner - 3) * 0.52) : inner;
     const rightWidth = wide ? inner - leftWidth - 3 : inner;
-    this.detailStart = wide ? 2 + leftWidth + 3 : state.view === "details" ? 2 : Infinity;
+    this.detailStart = wide ? 2 + leftWidth + 3 : Infinity;
     row(wide
       ? fit(muted(" STEPS / SPACE TO SELECT"), leftWidth) + muted(" │ ") + fit(muted("CANONICAL DETAILS"), rightWidth)
-      : muted(state.view === "steps" ? "STEPS  /  Tab for details" : "DETAILS  /  Tab for steps · PgDn scroll"));
+      : muted("STEPS / SPACE TO SELECT"));
+    const listRows = wide ? bodyHeight : Math.max(1, Math.floor(bodyHeight / 2));
+    const detailRows = wide ? bodyHeight : Math.max(0, bodyHeight - listRows - 1);
+    this.detailTop = wide ? Infinity : lines.length + listRows + 1;
 
     const entries: { text: string; stepId?: string; checkbox?: boolean }[] = [];
     let previousMilestone: string | undefined;
@@ -411,9 +366,12 @@ export class PlanScreen implements Component, Focusable {
       const selected = state.selected.has(step.id);
       const check = step.status === "completed" ? theme.fg("success", "[✓]") : selected ? accent("[x]") : muted(step.kind === "review" || step.kind === "handover" ? "[·]" : "[ ]");
       const kindMark = step.kind === "handover" ? "↪ " : step.kind === "review" ? "◇ " : "";
-      const title = `${kindMark}${this.singleLine(step.short_title || step.title)}`;
+      const displayTitle = this.singleLine(step.short_title || step.title);
+      const executorLabel = /^(🤖|◉)\s+/u;
+      const executorIcon = executorLabel.exec(this.singleLine(step.title))?.[1] ?? executorLabel.exec(displayTitle)?.[1];
+      const title = `${kindMark}${displayTitle.replace(executorLabel, "")}`;
       const focused = step.id === state.focusedStepId;
-      let titleLine = `${focused ? accent("›") : " "} ${check} ${step.id} ${focused ? theme.bold(title) : title}`;
+      let titleLine = `${focused ? accent("›") : " "} ${check} ${executorIcon ? `${executorIcon} ` : ""}${step.id} ${focused ? theme.bold(title) : title}`;
       titleLine = fit(titleLine, leftWidth);
       if (focused) titleLine = theme.bg("selectedBg", titleLine);
       entries.push({ text: titleLine, stepId: step.id, checkbox: true });
@@ -432,24 +390,24 @@ export class PlanScreen implements Component, Focusable {
     }
     const focusLine = entries.findIndex(entry => entry.stepId === state.focusedStepId && entry.checkbox);
     if (focusLine < state.listOffset) state.listOffset = Math.max(0, focusLine - 1);
-    if (focusLine >= state.listOffset + bodyHeight) state.listOffset = focusLine - bodyHeight + 1;
-    state.listOffset = Math.max(0, Math.min(state.listOffset, Math.max(0, entries.length - bodyHeight)));
+    if (focusLine >= state.listOffset + listRows) state.listOffset = focusLine - listRows + 1;
+    state.listOffset = Math.max(0, Math.min(state.listOffset, Math.max(0, entries.length - listRows)));
 
     this.lastRightWidth = wide ? rightWidth : inner;
     const details = this.detailLines(plan, state.focusedStep);
-    const detailMax = Math.max(0, details.length - bodyHeight);
+    const detailMax = Math.max(0, details.length - detailRows);
     state.detailOffset = Math.max(0, Math.min(state.detailOffset, detailMax));
     for (let i = 0; i < bodyHeight; i++) {
-      const entry = entries[state.listOffset + i];
+      const entry = wide || i < listRows ? entries[state.listOffset + i] : undefined;
       const y = lines.length;
-      if (entry?.stepId && (wide || state.view === "steps")) {
+      if (entry?.stepId) {
         this.hits.push({ x: 2, y, width: leftWidth, action: () => state.setFocused(entry.stepId!) });
         if (entry.checkbox) this.hits.unshift({ x: 4, y, width: 3, action: () => { state.setFocused(entry.stepId!); state.toggleSelection(entry.stepId!); } });
       }
-      const detail = details[state.detailOffset + i] ?? "";
+      const detail = details[state.detailOffset + (wide ? i : i - listRows - 1)] ?? "";
       row(wide
         ? fit(entry?.text ?? "", leftWidth) + muted(" │ ") + fit(detail, rightWidth)
-        : state.view === "steps" ? entry?.text ?? "" : detail);
+        : i < listRows ? entry?.text ?? "" : i === listRows ? muted("─ DETAILS ─") : detail);
     }
     rule();
     const selectedLabel = state.selectedStepIds.length
@@ -473,31 +431,17 @@ export class PlanScreen implements Component, Focusable {
     const wrappedNotice = wrapTextWithAnsi(notice, inner);
     row(wrappedNotice[0] ?? "");
     row(wrappedNotice[1] ?? "");
-    row(muted(wide
-      ? "↑↓/jk focus · Space select · PgUp/PgDn details · [ ] reorder · Esc close · mouse in fullscreen"
-      : "↑↓/jk focus · Space select · Tab details · PgDn · [ ] reorder · Esc close"));
+    row(muted("↑↓ navigate · plan changes belong in chat"));
     lines.push(theme.fg("border", `╰${"─".repeat(w - 2)}╯`));
     return lines.map(line => fit(line, w));
   }
 
-  private controls(wide: boolean): { label: string; action: () => void; enabled: boolean }[] {
-    const state = this.state;
+  private controls(): { label: string; action: () => void; enabled: boolean }[] {
     return [
-      ...(!wide ? [{ label: state.view === "steps" ? "[Tab] Details" : "[Tab] Steps", enabled: true,
-        action: () => { state.view = state.view === "steps" ? "details" : "steps"; this.refresh(); } }] : []),
-      { label: "[r] Run", action: () => this.dispatch("run"), enabled: !state.runBlocker },
-      { label: "[n] Add", action: () => this.dispatch("add"), enabled: true },
-      { label: "[a] Ask", action: () => this.dispatch("ask"), enabled: !!state.focusedStep },
-      { label: "[e] Edit", action: () => this.dispatch("edit"), enabled: !!state.focusedStep },
-      { label: "[v] Check plan", action: () => this.dispatch("review"), enabled: state.displayPlan.steps.some(s => s.status !== "completed") },
-      { label: "[m] Note", action: () => this.dispatch("note"), enabled: !!state.focusedStep },
-      { label: "[d] Split", action: () => this.dispatch("decompose"), enabled: !!state.focusedStep },
-      { label: "[x] Remove", action: () => this.dispatch("remove"), enabled: !!state.focusedStep },
-      { label: "[s] Save", action: () => this.dispatch("save"), enabled: state.dirty },
-      { label: "[z] Discard", action: () => this.dispatch("discard"), enabled: state.dirty },
-      { label: state.plan.lifecycle === "finished" ? "[f] Reopen" : "[f] Finish", action: () => this.dispatch("lifecycle"), enabled: true },
-      { label: "[g] Refresh", action: () => this.dispatch("refresh"), enabled: true },
-      { label: "[q] Close", action: () => this.dispatch("close"), enabled: true },
+      { label: "[Space] Select", action: () => this.selectFocused(), enabled: !!this.state.focusedStep && this.state.focusedStep.status !== "completed" },
+      { label: "[Enter] Run", action: () => this.dispatch("run"), enabled: !this.state.runBlocker },
+      { label: "[Esc] Close", action: () => this.dispatch("close"), enabled: true },
+      { label: "[A] Agents", action: () => this.dispatch("agents"), enabled: true },
     ];
   }
 
@@ -510,7 +454,7 @@ export class PlanScreen implements Component, Focusable {
   private detailLines(plan: Plan, step?: Step): string[] {
     const theme = this.theme;
     const wrap = (value: string) => wrapTextWithAnsi(value, Math.max(1, this.detailWidth));
-    if (!step) return [theme.fg("accent", "EMPTY PLAN"), "", ...wrap("No steps yet. Press n to add the first step."), "", theme.fg("muted", "Creating or editing a plan never authorizes implementation.")];
+    if (!step) return [theme.fg("accent", "EMPTY PLAN"), "", ...wrap("No steps yet. Ask Pi in chat to add the first step."), "", theme.fg("muted", "Creating or editing a plan never authorizes implementation.")];
     const byId = new Map(plan.steps.map(item => [item.id, item]));
     const lines: string[] = [theme.fg("accent", `STEP ${step.id} / ${(step.kind ?? "implementation").toUpperCase()}`), ...wrap(theme.bold(step.title)), ""];
     if (step.description) lines.push(theme.fg("muted", "DESCRIPTION"), ...wrap(step.description), "");
@@ -534,7 +478,7 @@ export class PlanScreen implements Component, Focusable {
     if (step.reasoning_effort) lines.push(...wrap(`Reasoning effort preference: ${step.reasoning_effort}`));
     if (step.parallel_group) lines.push(...wrap(`Planned parallel group ${step.parallel_group} is a hint, not independence evidence. Workers need exact file/read/resource claims; sequential fallback remains available.`));
     if (step.handover_after) lines.push(...wrap(`Suggested handover after this step: ${step.handover_after}`));
-    if (step.kind === "handover") lines.push(theme.fg("warning", "Requires ready prerequisites, drained source writers and hyperion_handover. Completion follows ownership transfer only."));
+    if (step.kind === "handover") lines.push(theme.fg("warning", "Requires ready prerequisites, drained writers and a capable host-owned handoff. Completion follows ownership transfer only; Hyperion does not launch it."));
     if (step.comments?.length) {
       lines.push("", theme.fg("muted", "NOTES"));
       for (const note of step.comments) {
@@ -542,7 +486,7 @@ export class PlanScreen implements Component, Focusable {
         if (note.response) lines.push(...wrap(`Response: ${note.response}`));
       }
     }
-    lines.push("", theme.fg("accent", "[a] Ask Pi about this step"), ...wrap("A question does not authorize implementation."));
+    lines.push("", ...wrap("Ask about this step in chat. A question does not authorize implementation."));
     return lines;
   }
 
@@ -552,4 +496,490 @@ export class PlanScreen implements Component, Focusable {
     return Math.max(1, this.lastRightWidth ?? 72);
   }
   private lastRightWidth?: number;
+}
+
+interface SelectedPlanPath {
+  value: string;
+  source: "explicit" | "binding" | "discovery";
+  planId?: string;
+}
+
+async function choosePlanPath(args: string, ctx: ExtensionContext): Promise<SelectedPlanPath | undefined> {
+  const provided = args.trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (provided) return { value: provided, source: "explicit" };
+  const binding = latestBinding(ctx);
+  if (binding) return { value: binding.path, source: "binding", planId: binding.plan_id };
+  const discovery = await discoverPlans(ctx.cwd);
+  if (discovery.selected) return {
+    value: discovery.selected.path, source: "discovery", planId: discovery.selected.plan.plan_id,
+  };
+  if (discovery.diagnostics.length) {
+    ctx.ui.notify(`${discovery.diagnostics.join("\n")}\nSpecify a plan path explicitly; no fallback was chosen.`, "error");
+    return undefined;
+  }
+  if (discovery.truncated) ctx.ui.notify("Plan discovery is incomplete. Choose a plan explicitly.", "warning");
+  const candidates = discovery.candidates.filter(candidate => candidate.lifecycle !== "finished");
+  if (candidates.length) {
+    const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+    const options = candidates.map((candidate, index) =>
+      `${index + 1}. ${clean(path.relative(ctx.cwd, candidate.path))} — ${clean(candidate.title)}`);
+    const other = "Enter another plan path…";
+    const choice = await ctx.ui.select("Choose Hyperion plan", [...options, other]);
+    if (choice === undefined) return undefined;
+    if (choice !== other) {
+      const candidate = candidates[options.indexOf(choice)];
+      return candidate ? { value: candidate.path, source: "discovery", planId: candidate.plan_id } : undefined;
+    }
+  }
+  const value = await ctx.ui.input("Open Hyperion plan — enter plan path", "Path to a plan (.md or .json)");
+  if (!value?.trim()) return undefined;
+  return { value: value.trim(), source: "explicit" };
+}
+
+export async function openPlan(args: string, ctx: ExtensionContext, pi: ExtensionAPI, isContextCurrent: () => boolean = () => true,
+  openAgents?: (ctx: ExtensionContext) => Promise<"back" | "close">): Promise<void> {
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify("The native Hyperion screen requires Pi interactive TUI. The shared Hyperion CLI remains available.", "warning");
+    return;
+  }
+  const actorId = ctx.sessionManager.getSessionId();
+  let openingCurrent = true;
+  const offOpenTree = pi.on("session_tree", () => { openingCurrent = false; });
+  const offOpenShutdown = pi.on("session_shutdown", () => { openingCurrent = false; });
+  const assertOpening = () => {
+    if (!isContextCurrent() || !openingCurrent || actorId !== ctx.sessionManager.getSessionId()) throw new Error("The screen/session changed; no plan was created or bound in another session.");
+  };
+  try {
+  const selected = await choosePlanPath(args, ctx);
+  assertOpening();
+  if (!selected) return;
+  let snapshot: PlanSnapshot;
+  const resolved = selectedPlanPath(selected.value, ctx.cwd);
+  try {
+    snapshot = await loadPlanSnapshot(selected.value, { cwd: ctx.cwd });
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      ctx.ui.notify(`Could not open Hyperion plan: ${errorMessage(error)}`, "error");
+      return;
+    }
+    if (selected.source !== "explicit") {
+      ctx.ui.notify(`The ${selected.source === "binding" ? "session-bound" : "discovered"} plan no longer exists: ${resolved}. Choose a plan path explicitly; Hyperion will not create a replacement automatically.`, "error");
+      return;
+    }
+    if (path.extname(resolved).toLowerCase() !== ".md") {
+      ctx.ui.notify("Only an explicitly selected .md path can create a new plan.", "error");
+      return;
+    }
+    const confirmed = await ctx.ui.confirm(
+      "Create an empty Hyperion plan?",
+      `Create a new canonical Markdown plan at ${resolved}? This does not create tasks or approve implementation.`,
+    );
+    if (!confirmed) return;
+    const title = await ctx.ui.input("Plan title", path.basename(resolved, path.extname(resolved)));
+    if (!title?.trim()) return;
+    try { snapshot = await createPlan(selected.value, title.trim(), { cwd: ctx.cwd, beforeWrite: assertOpening }); }
+    catch (createError) { ctx.ui.notify(`Could not create Hyperion plan: ${errorMessage(createError)}`, "error"); return; }
+  }
+  if (selected.planId && snapshot.plan.plan_id !== selected.planId) {
+    ctx.ui.notify(`The ${selected.source === "binding" ? "session-bound" : "discovered"} path now contains plan ${snapshot.plan.plan_id}, not ${selected.planId}. Specify the path explicitly to bind the replacement.`, "error");
+    return;
+  }
+  assertOpening();
+  bindPlan(pi, snapshot);
+  const state = new PlanScreenState(snapshot, actorId, !ctx.isIdle(), draft => persistDraft(pi, snapshot, draft));
+  const savedDraft = latestDraft(ctx, snapshot.path, snapshot.plan.plan_id);
+  if (savedDraft) state.restoreDraft(savedDraft.base_plan, savedDraft.operations, savedDraft.base_revision, savedDraft.base_digest);
+
+  let requestRender: (() => void) | undefined;
+  let finishScreen: ((action: PlanScreenAction) => void) | undefined;
+  let closed = false;
+  let actionEpoch = 0;
+  const refreshIdle = async () => {
+    try {
+      const latest = await loadPlanSnapshot(snapshot.path, { cwd: ctx.cwd });
+      if (closed || !isContextCurrent()) return;
+      if (latest.plan.plan_id !== snapshot.plan.plan_id) {
+        state.setNotice("The plan was replaced. Close this screen and select its path explicitly.");
+        state.readOnly = true;
+      } else {
+        state.acceptSnapshot(latest);
+        state.setBusy(!ctx.isIdle());
+      }
+    } catch (error) {
+      if (!closed) { state.readOnly = true; state.setNotice(errorMessage(error)); }
+    }
+    if (!closed) requestRender?.();
+  };
+  const offStart = pi.on("agent_start", () => { state.setBusy(true); requestRender?.(); });
+  const offSettled = pi.on("agent_settled", () => { void refreshIdle(); });
+  const closeScreen = () => { actionEpoch++; closed = true; finishScreen?.({ type: "close" }); };
+  const offTree = pi.on("session_tree", closeScreen);
+  const offShutdown = pi.on("session_shutdown", closeScreen);
+  try { while (!closed && isContextCurrent()) {
+    let action = await ctx.ui.custom<PlanScreenAction>((tui, theme, _keys, done) => {
+      requestRender = () => tui.requestRender();
+      finishScreen = done;
+      return new PlanScreen(state, theme, requestRender, () => tui.terminal.rows, value => {
+        requestRender = undefined; finishScreen = undefined; done(value);
+      });
+    }, { overlay: true, overlayOptions: { width: "96%", maxHeight: "95%", anchor: "center" } });
+    try {
+      const epoch = actionEpoch;
+      const assertSession = () => {
+        if (!isContextCurrent() || closed || epoch !== actionEpoch || ctx.sessionManager.getSessionId() !== actorId)
+          throw new Error("The screen/session changed; no request was sent to another session.");
+      };
+      const assertCurrent = () => {
+        assertSession();
+        if (!ctx.isIdle()) throw new Error("Pi became busy; canonical admission is deferred to the queued turn.");
+      };
+      if (action.type === "agents") {
+        assertSession();
+        if (!openAgents) { state.setNotice("Agents view is unavailable in this host."); continue; }
+        const navigation = await openAgents(ctx);
+        assertSession();
+        if (navigation === "back") { await refreshIdle(); continue; }
+        action = { type: "close" };
+      }
+      let userText: string | undefined;
+      if (action.type === "ask" || action.type === "edit" || action.type === "add" || action.type === "note") {
+        const title = action.type === "add" ? "What should be added to the plan?" : action.type === "ask" ? `Ask about ${action.stepId}`
+          : action.type === "edit" ? `What should change in ${action.stepId}?` : `Note for ${action.stepId}`;
+        userText = (await ctx.ui.input(title, "Question or requested plan change"))?.trim();
+        if (!userText) continue;
+        if ([...userText].length > 1000) throw new Error("Request must be at most 1,000 characters.");
+      }
+      const outcome = await handleScreenAction(action, state, ctx, pi, assertCurrent, assertSession, userText);
+      if (outcome === "close") {
+        if (state.dirty) ctx.ui.notify("Unsaved Hyperion edits are preserved in this Pi session. Reopen the plan to inspect them before an explicit Run.", "info");
+        else if (state.selected.size) ctx.ui.notify("Local selection was not saved or resumed. Press Run explicitly next time to authorize work.", "info");
+        return;
+      }
+    } catch (error) {
+      state.setNotice(errorMessage(error));
+      ctx.ui.notify(errorMessage(error), "error");
+    }
+  } } finally {
+    closed = true;
+    offStart?.(); offSettled?.(); offTree?.(); offShutdown?.();
+  }
+  } finally { offOpenTree?.(); offOpenShutdown?.(); }
+}
+
+
+export const planToolPresentation: Pick<ToolDefinition<any>, "renderCall" | "renderResult"> = {
+    renderCall(value, theme) {
+      const args = (record(value) ? value : {}) as { action?: string; path?: string };
+      const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+      return new Text(`${theme.fg("toolTitle", "Hyperion Plan")} · ${args.action ?? "…"}${args.path ? ` · ${clean(args.path)}` : ""}`, 0, 0);
+    },
+    renderResult(result, options, theme) {
+      if (options.expanded || !record(result.details))
+        return new Text(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"), 0, 0);
+      const data = result.details;
+      if (typeof data.revision !== "number") {
+        const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
+        const warning = data.error || (Array.isArray(data.diagnostics) && data.diagnostics.length)
+          ? " · needs attention" : data.truncated ? " · incomplete scan" : "";
+        return new Text(`Discovery · ${count} candidate(s)${warning}`, 0, 0);
+      }
+      const title = (record(data.summary) && typeof data.summary.title === "string" ? data.summary.title : "Plan")
+        .replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+      const label = data.screen === "queued" ? "Overlay queued until this turn settles"
+        : data.screen === "unavailable" ? "Native overlay unavailable in this mode"
+        : data.action === "submit" ? "Request recorded · execution is not automatic"
+        : data.action === "checkpoint" || data.action === "plan-review" ? "Coordinator outcome recorded · not machine-certified"
+        : data.changed === true ? "Saved · no new implementation approval" : "Inspected";
+      return new Text(`${theme.fg("muted", title)} · r${data.revision}\n${label}`, 0, 0);
+    },
+};
+
+// Observational state only: no execution, cancellation, retry, or plan writes.
+const LOG_LIMIT = 64 * 1024;
+const logText = (text: string) => text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\t/g, "    ").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
+const messageText = (message: { content?: unknown }) => Array.isArray(message.content)
+  ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
+export interface AgentActivity {
+  record: AgentRecord;
+  live: boolean;
+  activity: string;
+  lastEventAt?: number;
+  log: string;
+  streaming: string;
+  clipped: boolean;
+  restored: boolean;
+}
+export class AgentActivityState {
+  readonly agents = new Map<string, AgentActivity>();
+  private listeners = new Set<() => void>();
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  private notify(): void { for (const listener of this.listeners) listener(); }
+  restore(records: AgentRecord[]): void { for (const r of records) this.record(r); }
+  record(record: AgentRecord, live = false): void {
+    if (!record || typeof record.id !== "string" || typeof record.transcript_path !== "string") return;
+    const prior = this.agents.get(record.id);
+    const active = live && !record.settled && ["launching", "running"].includes(record.state);
+    this.agents.set(record.id, { record: { ...record }, live: active,
+      activity: active ? record.state === "running" && prior?.record.state === "launching" ? "Waiting for response" : prior?.activity ?? record.state
+        : record.state === "rejected" ? "Not launched · dispatch rejected"
+        : record.settled ? record.report ? "Report available" : "Assignment settled" : "Unknown · no live observer",
+      lastEventAt: record.updated_at, log: prior?.log ?? "", streaming: active ? prior?.streaming ?? "" : "",
+      clipped: prior?.clipped ?? false, restored: prior?.restored ?? false });
+    if (record.limitation && record.limitation !== prior?.record.limitation) this.append(record.id, `Limitation: ${record.limitation}`);
+    this.notify();
+  }
+  private append(id: string, text: string): void {
+    const a = this.agents.get(id)!;
+    const next = a.log + (a.log && text ? "\n" : "") + logText(text);
+    a.clipped ||= next.length > LOG_LIMIT;
+    a.log = next.slice(-LOG_LIMIT);
+  }
+  event(id: string, event: AgentSessionEvent): void {
+    const a = this.agents.get(id);
+    if (!a?.live) return;
+    a.lastEventAt = Date.now();
+    if (event.type === "tool_execution_start") {
+      a.activity = `${event.toolName}${typeof event.args?.path === "string" ? ` ${event.args.path}` : ""}`;
+      this.append(id, `▶ ${a.activity}`);
+    } else if (event.type === "message_update" && event.message.role === "assistant") {
+      a.activity = "Generating response";
+      // Display response text only, not private reasoning or provider payloads.
+      const text = logText(messageText(event.message));
+      a.clipped ||= text.length > LOG_LIMIT;
+      a.streaming = text.slice(-LOG_LIMIT);
+    } else if (event.type === "message_end" && event.message.role === "assistant") {
+      a.streaming = "";
+      const text = messageText(event.message);
+      if (text) this.append(id, `Assistant\n${text}`);
+      if (event.message.errorMessage) this.append(id, `Error: ${event.message.errorMessage}`);
+    } else if (event.type === "tool_execution_end") {
+      this.append(id, `${event.isError ? "✗" : "✓"} ${event.toolName}\n${messageText(event.result)}`);
+      a.activity = "Waiting for response";
+    } else if (event.type === "compaction_start") {
+      a.activity = "Compacting context"; this.append(id, a.activity);
+    } else if (event.type === "compaction_end") {
+      a.activity = "Waiting for response";
+      this.append(id, event.aborted ? "Compaction aborted" : event.errorMessage ?? "Compaction finished");
+    } else return;
+    this.notify();
+  }
+  restoreLog(id: string, sessionDir: string): void {
+    const a = this.agents.get(id);
+    if (!a || a.restored || a.live) return;
+    a.restored = true;
+    if (a.record.state === "rejected") return; // No native session/transcript exists for a pre-launch rejection.
+    let fd: number | undefined;
+    try {
+      const base = fs.realpathSync(path.join(sessionDir, "hyperion-agents"));
+      const file = fs.realpathSync(a.record.transcript_path);
+      if (!file.startsWith(base + path.sep)) throw new Error("Transcript is outside this coordinator's agent directory");
+      fd = fs.openSync(file, "r");
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile()) throw new Error("Transcript is not a regular file");
+      const header = Buffer.alloc(Math.min(stat.size, 8192));
+      fs.readSync(fd, header, 0, header.length, 0);
+      const identity = JSON.parse(header.toString("utf8").split("\n")[0]!);
+      if (identity.type !== "session" || identity.id !== a.record.native_id) throw new Error("Transcript identity does not match the assignment");
+      const offset = Math.max(0, stat.size - 256 * 1024), tail = Buffer.alloc(stat.size - offset);
+      fs.readSync(fd, tail, 0, tail.length, offset);
+      const lines = tail.toString("utf8").split("\n");
+      if (offset) { lines.shift(); a.clipped = true; }
+      a.log = "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const entry = JSON.parse(line), m = entry.message;
+        if (entry.type === "compaction") this.append(id, "Context compacted");
+        if (entry.type !== "message" || !m) continue;
+        if (m.role === "assistant") {
+          for (const c of m.content ?? []) if (c.type === "toolCall")
+            this.append(id, `▶ ${c.name}${typeof c.arguments?.path === "string" ? ` ${c.arguments.path}` : ""}`);
+          const text = messageText(m); if (text) this.append(id, `Assistant\n${text}`);
+        } else if (m.role === "toolResult") this.append(id, `${m.isError ? "✗" : "✓"} ${m.toolName}\n${messageText(m)}`);
+      }
+      // A single large JSONL message can exceed the tail window entirely.
+      if (a.record.report && !a.log.endsWith(logText(a.record.report).slice(-LOG_LIMIT)))
+        this.append(id, `Recorded report\n${a.record.report}`);
+    } catch (error) {
+      this.append(id, `Transcript unavailable: ${errorMessage(error)}`);
+      if (a.record.report) this.append(id, `Recorded report\n${a.record.report}`);
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+  }
+}
+
+export class AgentScreen implements Component {
+  private selected?: string;
+  private focus: "agents" | "logs" = "agents";
+  private list?: SelectList;
+  private listKey = "";
+  private logKey = "";
+  private wrapped: string[] = [];
+  private detailStart = 0;
+  private bodyRows = 1;
+  private readonly logs: ScrollView;
+  constructor(readonly state: AgentActivityState, private theme: ThemeLike, private refresh: () => void,
+    private height: () => number, private done: (navigation: "back" | "close") => void, private loadLog: (id: string) => void = () => {}) {
+    this.logs = new ScrollView({ render: () => this.wrapped, invalidate() {} }, { follow: "end", scrollbar: "hidden" });
+  }
+  invalidate(): void { this.listKey = ""; this.logKey = ""; }
+  private select(id: string): void {
+    if (id === this.selected) return;
+    this.selected = id; this.loadLog(id); this.logs.scrollToEnd(); this.refresh();
+  }
+  handleInput(data: string): void {
+    if (matchesKey(data, "escape") || matchesKey(data, "q")) { this.done("close"); return; }
+    if (data === "b" || data === "B") { this.done("back"); return; }
+    if (matchesKey(data, "tab")) this.focus = this.focus === "agents" ? "logs" : "agents";
+    else if (matchesKey(data, "left")) this.focus = "agents";
+    else if (matchesKey(data, "right") || matchesKey(data, "return")) this.focus = "logs";
+    else if (matchesKey(data, "end")) { this.logs.scrollToEnd(); this.focus = "logs"; }
+    else if (matchesKey(data, "home")) { this.logs.scrollToStart(); this.focus = "logs"; }
+    else if (matchesKey(data, "pageUp")) this.logs.scrollBy(-this.bodyRows);
+    else if (matchesKey(data, "pageDown")) this.logs.scrollBy(this.bodyRows);
+    else if (this.focus === "agents") this.list?.handleInput(data);
+    else if (matchesKey(data, "up")) this.logs.scrollBy(-1);
+    else if (matchesKey(data, "down")) this.logs.scrollBy(1);
+    this.refresh();
+  }
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    event = { ...event, x: event.x - 1, y: event.y - 1 };
+    if (event.y === 3 + this.bodyRows && event.x >= 0 && event.x < 8 && event.button === "left") {
+      if (event.type === "click") { this.done("back"); return { handled: true, render: true }; }
+      if (event.type === "press") return { handled: true, focus: true };
+    }
+    if (event.y < 3 || event.y >= 3 + this.bodyRows) return;
+    const logs = this.detailStart === 0 ? this.focus === "logs" : event.x >= this.detailStart;
+    if (logs) {
+      this.focus = "logs";
+      if (event.type === "wheel") this.logs.scrollBy(event.wheelDelta ?? 0);
+      else if (event.type !== "press" && event.type !== "click") return;
+      this.refresh(); return { handled: true, render: true, ...(event.type === "press" ? { focus: true } : {}) };
+    }
+    this.focus = "agents";
+    const result = this.list?.handleMouse({ ...event, y: event.y - 3 });
+    this.refresh(); return result;
+  }
+  render(width: number): string[] {
+    const w = Math.max(1, width - 2), height = Math.max(1, Math.floor(this.height() * .95));
+    const fit = (text: string, columns = w) => {
+      const clipped = truncateToWidth(text, columns);
+      return clipped + " ".repeat(Math.max(0, columns - visibleWidth(clipped)));
+    };
+    this.bodyRows = Math.max(1, height - 8);
+    const agents = [...this.state.agents.values()].reverse();
+    if (!this.selected || !this.state.agents.has(this.selected)) this.select(agents[0]?.record.id ?? "");
+    const a = this.state.agents.get(this.selected ?? "");
+    const status = (a: AgentActivity) => a.live ? a.record.state : a.record.settled ? a.record.state : "unknown";
+    const key = JSON.stringify([agents.map(a => [a.record.id, a.record.title, status(a)]), this.bodyRows]);
+    if (key !== this.listKey) {
+      this.listKey = key;
+      this.list = new SelectList(agents.map(a => ({ value: a.record.id,
+        label: `${status(a)} · ${logText(a.record.title ?? a.record.id).replace(/\n/g, " ")}` })), this.bodyRows, {
+        selectedPrefix: text => this.theme.fg("accent", text), selectedText: text => this.theme.fg("accent", text),
+        description: text => this.theme.fg("muted", text), scrollInfo: text => this.theme.fg("dim", text),
+        noMatch: text => this.theme.fg("muted", text),
+      });
+      this.list.setSelectedIndex(Math.max(0, agents.findIndex(a => a.record.id === this.selected)));
+      this.list.onSelectionChange = item => this.select(item.value);
+    }
+    const wide = w >= 80, leftWidth = Math.min(38, Math.floor(w * .32));
+    this.detailStart = wide ? leftWidth + 3 : 0;
+    const rightWidth = wide ? w - this.detailStart : w;
+    const text = a ? `${a.clipped ? "[Recent log only · complete transcript retained]\n" : ""}${a.log}${a.streaming ? `\nAssistant (streaming)\n${a.streaming}` : ""}`
+      || "Waiting for the first activity event…" : "No Hyperion assignments in this coordinator session.";
+    const logKey = `${rightWidth}\0${text}`;
+    if (this.logKey !== logKey) { this.logKey = logKey; this.wrapped = text.split("\n").flatMap(line => wrapTextWithAnsi(logText(line), rightWidth)); }
+    this.logs.updateLayout(this.wrapped.length, this.bodyRows, this.refresh);
+    const right = this.logs.render(rightWidth).slice(this.logs.scrollTop, this.logs.scrollTop + this.bodyRows);
+    const left = agents.length ? this.list!.render(wide ? leftWidth : w) : [this.theme.fg("muted", "No assignments")];
+    const rows = Array.from({ length: this.bodyRows }, (_, i) => wide
+      ? fit(left[i] ?? "", leftWidth) + this.theme.fg("border", " │ ") + fit(right[i] ?? "", rightWidth)
+      : fit((this.focus === "agents" ? left : right)[i] ?? ""));
+    const elapsed = a?.record.started_at ? `${Math.max(0, Math.floor(((a.live ? Date.now() : a.record.updated_at ?? Date.now()) - a.record.started_at) / 1000))}s` : "";
+    const activity = a ? `${status(a)}${elapsed ? ` · ${elapsed}` : ""} · ${logText(a.activity).replace(/\n/g, " ")}` : "No assignments yet";
+    const idle = a?.live && a.lastEventAt ? ` · last event ${Math.floor((Date.now() - a.lastEventAt) / 1000)}s ago` : "";
+    const contents = [this.theme.fg("accent", "HYPERION / AGENTS · coordinator view"),
+      this.theme.fg("muted", activity + idle),
+      this.theme.fg("accent", wide ? `Agents${this.focus === "agents" ? " [focused]" : ""}`.padEnd(leftWidth) + ` │ Logs${this.focus === "logs" ? " [focused]" : ""}`
+        : this.focus === "agents" ? "Agents · Tab opens logs" : "Logs · Tab returns to agents"),
+      ...rows, this.theme.fg("muted", "[B] Back · Tab: pane · ↑↓: navigate · PgUp/PgDn: logs"),
+      this.theme.fg("muted", `Home: oldest · End: follow · Esc: close${this.logs.isFollowingEnd ? " · following" : " · paused"}`),
+      this.theme.fg("dim", "Read-only · closing this view does not stop an assignment")];
+    return [this.theme.fg("border", `┌${"─".repeat(w)}┐`),
+      ...contents.map(line => this.theme.fg("border", "│") + fit(line) + this.theme.fg("border", "│")),
+      this.theme.fg("border", `└${"─".repeat(w)}┘`)].slice(0, height).map(line => truncateToWidth(line, Math.max(1, width)));
+  }
+}
+
+export function registerAgentView(pi: ExtensionAPI) {
+  let actor: string | undefined, state = new AgentActivityState(), open = false, statusText = "";
+  const get = (ctx: ExtensionContext) => {
+    const id = ctx.sessionManager.getSessionId();
+    if (actor !== id) {
+      actor = id; state = new AgentActivityState(); statusText = "";
+      const entries = ctx.sessionManager.getEntries?.() ?? ctx.sessionManager.getBranch();
+      state.restore(entries.filter(e => e.type === "custom" && e.customType === AGENT_ENTRY).map(e => (e as any).data));
+    }
+    return state;
+  };
+  const status = (ctx: ExtensionContext) => {
+    if (ctx.mode !== "tui") return;
+    const agents = [...state.agents.values()];
+    const active = agents.filter(a => a.live).length, unknown = agents.filter(a => !a.live && !a.record.settled).length;
+    const next = agents.length ? `Agents: ${active} active${unknown ? ` · ${unknown} unknown` : ""} · /hyperion → A` : "";
+    if (next !== statusText) { statusText = next; ctx.ui.setStatus?.("hyperion-agents", next || undefined); }
+  };
+  const show = async (ctx: ExtensionContext): Promise<"back" | "close"> => {
+    if (ctx.mode !== "tui") { ctx.ui.notify("The Agents view requires Pi interactive TUI mode.", "warning"); return "close"; }
+    if (open) return "close";
+    const source = get(ctx); open = true;
+    let finish: ((navigation: "back" | "close") => void) | undefined, render: (() => void) | undefined, closed = false;
+    const close = () => { closed = true; finish?.("close"); };
+    const unsubscribers = [source.subscribe(() => render?.()), pi.on("session_before_switch", close), pi.on("session_before_tree", close),
+      pi.on("session_before_fork", close), pi.on("session_start", close), pi.on("session_shutdown", close)];
+    const timer = setInterval(() => render?.(), 1000);
+    try {
+      return await ctx.ui.custom<"back" | "close">((tui, theme, _keys, done) => {
+        finish = navigation => { render = undefined; done(navigation); };
+        if (closed) { queueMicrotask(() => finish?.("close")); return new Text("Agents view closed", 0, 0); }
+        render = () => tui.requestRender();
+        return new AgentScreen(source, theme, render, () => tui.terminal.rows, finish,
+          id => source.restoreLog(id, ctx.sessionManager.getSessionDir()));
+      }, { overlay: true, overlayOptions: { width: "96%", maxHeight: "95%", anchor: "center" } });
+    } finally { render = undefined; finish = undefined; clearInterval(timer); for (const off of unsubscribers) off?.(); open = false; }
+  };
+  pi.on("session_start", (_event, ctx) => {
+    actor = undefined;
+    if (ctx.mode === "tui") ctx.ui.setStatus?.("hyperion-agents", undefined);
+    get(ctx); status(ctx);
+  });
+  return {
+    open: show,
+    record(ctx: ExtensionContext, r: AgentRecord) { get(ctx).record(r, true); status(ctx); },
+    event(ctx: ExtensionContext, id: string, event: AgentSessionEvent) { get(ctx).event(id, event); },
+  };
+}
+
+const clean = (text: string, limit = 120) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, limit);
+
+export function progressView(plan: Plan): { fingerprint: string; lines: string[] } {
+  const completed = plan.steps.filter(step => step.status === "completed");
+  const active = plan.steps.filter(step => step.status === "in_progress");
+  const blocked = plan.steps.filter(step => step.blocked_by);
+  const byId = new Map(plan.steps.map(step => [step.id, step]));
+  const next = plan.steps.find(step => step.status === "pending" && !step.blocked_by &&
+    prerequisites(step).every(id => byId.get(id)?.status === "completed"));
+  const scope = plan.execution;
+  const lines = [
+    `${clean(plan.title)} · ${completed.length}/${plan.steps.length} complete`,
+    ...active.slice(0, 2).map(step => `In progress: ${clean(step.title)}${step.progress_note ? ` — ${clean(step.progress_note, 160)}` : ""}`),
+    ...blocked.slice(0, 2).map(step => `Blocked: ${clean(step.title)} — ${clean(step.blocked_by!, 160)}`),
+    ...(next ? [`Next candidate: ${clean(next.title)} (not started)`] : []),
+    scope ? `Execution: ${scope.state} · ${scope.selected_step_ids.length} selected` : "No implementation approved",
+  ];
+  // Include scope and recorded progress, not receipts or revision-only bookkeeping.
+  const fingerprint = digestText(JSON.stringify({ lifecycle: plan.lifecycle ?? "active", title: plan.title,
+    steps: plan.steps.map(step => [step.id, step.title, step.status, step.progress_note, step.blocked_by, step.depends_on, step.run_after]),
+    execution: scope ? [scope.state, scope.selected_step_ids] : null }));
+  return { fingerprint, lines };
 }

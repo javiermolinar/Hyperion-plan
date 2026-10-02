@@ -1,7 +1,5 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const api = require('../dist/index.cjs');
 
 function approved(steps = [{id:'a',title:'A'}, {id:'b',title:'B',depends_on:['a']}], selected = steps.filter(s=>s.status!=='completed').map(s=>s.id)) {
@@ -103,17 +101,11 @@ test('worker success cannot stand in for coordinator verification or writer quie
   assert.throws(()=>api.assertVerifiedWorkerResult(handle,{...result,quiescence:{state:'verified',evidence:[]}},verified),/quiescence/);
 });
 
-test('both hosts consume shared checkpoint/ownership rules with capability-aware Pi waves',()=>{
+test('Codex transport consumes shared checkpoint/ownership rules; shared instructions stay host-neutral',()=>{
   const request={plan_id:'p',base_revision:1,request_id:'r',intent:'implement',selected_step_ids:['a'],operations:[]};
   const prompt=api.codexPrompt({plan_path:'/plan.md',skill_path:'/skill.md',request,title:'Run'});
   assert.ok(prompt.includes(api.CHECKPOINT_INSTRUCTIONS));
   assert.ok(prompt.includes(api.OWNERSHIP_INSTRUCTIONS));
-  const pi=fs.readFileSync(path.join(__dirname,'../src/pi/extension.ts'),'utf8');
-  assert.match(pi,/CHECKPOINT_INSTRUCTIONS,/);
-  assert.match(pi,/OWNERSHIP_INSTRUCTIONS,/);
-  assert.match(pi,/bounded hyperion_wave assignments only for selected implementation steps/);
-  assert.match(pi,/Explicit sequential mode permits at most one assignment/);
-  assert.match(pi,/checkpoint each completion or blocker, then reconcile the wave/);
   const shared=api.requestInstructions(request,{freshTask:'fresh session',freshTasks:'fresh sessions'});
   assert.doesNotMatch(shared,/Codex|Pi|spawn_agent|RPC/);
 });

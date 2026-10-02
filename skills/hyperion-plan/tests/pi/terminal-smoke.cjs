@@ -20,7 +20,7 @@ core.saveMarkdown(path.join(workspace, 'plan.md'), core.initialize({ title: 'Run
 ] }));
 const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
 const cli = path.join(root, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
-const command = `cd ${quote(workspace)} && ${quote(process.execPath)} ${quote(cli)} --provider hyperion-test --model scripted --thinking off --no-session --approve --no-builtin-tools --no-skills --no-context-files --no-prompt-templates --no-themes -e ${quote(path.join(__dirname, 'scripted-provider.ts'))}`;
+const command = `cd ${quote(workspace)} && ${quote(process.execPath)} ${quote(cli)} --provider hyperion-test --model scripted --thinking off --no-session --approve --no-builtin-tools --no-skills --no-context-files --no-prompt-templates --no-themes -e ${quote(path.join(__dirname, 'fixture.ts'))}`;
 const tape = `Set Shell "bash"
 Set Width 1400
 Set Height 800
@@ -34,7 +34,7 @@ Sleep 5s
 Show
 Set TypingSpeed 50ms
 Ctrl+u
-Type "/hyperion-plan"
+Type "/hyperion"
 Sleep 500ms
 Enter
 Sleep 2s
@@ -50,10 +50,16 @@ Sleep 500ms
 Enter
 Sleep 4s
 Screenshot overlay.png
+Type "A"
+Sleep 2s
+Screenshot agents.png
+Type "B"
+Sleep 2s
+Screenshot back.png
 Escape
 Sleep 1s
 Screenshot inline.png
-Type "/hyperion-plan"
+Type "/hyperion"
 Sleep 500ms
 Enter
 Sleep 2s
@@ -88,8 +94,14 @@ assert.ok(events.some(e => e.event === 'settled' && e.idle), 'run settles');
 const terminal = fs.readFileSync(path.join(output, 'terminal.ascii'), 'utf8');
 assert.match(terminal, /HYPERION\s+\/\s+PLAN/, 'native overlay actually rendered');
 assert.match(terminal, /Runtime overlay regression/);
+for (const label of ['[Space] Select', '[Enter] Run', '[Esc] Close', '[A] Agents'])
+  assert.ok(terminal.includes(label), `Four-action main menu: ${label}`);
+assert.doesNotMatch(terminal, /\[(?:r|e|n|m|f|g|q|Tab)\] (?:Run|Edit|Add|Note|Finish|Refresh|Close|Details)/);
 assert.match(terminal, /HYPERION.*PROGRESS/, 'inline progress is visible without an overlay');
+assert.match(terminal, /HYPERION\s+\/\s+AGENTS/, 'A opens the coordinator agent view');
+assert.match(terminal, /\[B\] Back/, 'agent view exposes B to return to the plan');
+assert.match(terminal, /No Hyperion assignments/, 'empty agent view does not fabricate activity');
 assert.doesNotMatch(terminal, /VIEW ONLY.*Pi busy/, 'prompted overlay is editable after settlement');
 assert.equal(core.loadMarkdown(path.join(workspace, 'plan.md'))[0].execution, undefined);
-for (const name of ['discovered.png', 'overlay.png', 'inline.png', 'reopened.png']) assert.ok(fs.statSync(path.join(output, name)).size > 1000);
-console.log('PASS: real Pi cold command discovery, reload, model tool exposure, prompted editable overlay, bound reopen; no implementation approval.');
+for (const name of ['discovered.png', 'overlay.png', 'inline.png', 'agents.png', 'back.png', 'reopened.png']) assert.ok(fs.statSync(path.join(output, name)).size > 1000);
+console.log('PASS: real Pi cold discovery, reload, model tools, prompted editable overlay, A/B plan-agent navigation, bound reopen; no implementation approval.');

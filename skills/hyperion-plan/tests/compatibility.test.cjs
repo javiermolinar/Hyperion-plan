@@ -2,7 +2,15 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const api = require("../dist/index.cjs");
 const fixture = require("./fixtures/python-baseline.json");
-for (const [index, c] of fixture.cases.entries())
+// Frozen storage traces repeat pure fingerprint calls. Run each exact input/output
+// pair once; retain all other cases and the original fixture indices for diagnosis.
+const fingerprints = new Set();
+for (const [index, c] of fixture.cases.entries()) {
+  if (c.fn === 'stepFingerprint') {
+    const key = JSON.stringify([c.args, c.error, c.result]);
+    if (fingerprints.has(key)) continue;
+    fingerprints.add(key);
+  }
   test(`Python compatibility ${index + 1}: ${c.test.split(".").at(-1)} / ${c.fn}`, () => {
     // Freshness is advisory now; retain the frozen fixture and assert the new contract.
     if (c.error?.startsWith("Step needs review:") && c.fn === "checkpoint") {
@@ -73,3 +81,4 @@ for (const [index, c] of fixture.cases.entries())
     }
     assert.deepEqual(actual, c.result);
   });
+}

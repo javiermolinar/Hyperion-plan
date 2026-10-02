@@ -84,7 +84,8 @@ test('CLI persists handover ownership, protects exports and rejects stale or wro
   run('handover','--base-revision',String(p.revision),'--input',input,'--task-id','source');
   const shown=JSON.parse(run('show'));let current=shown.plan??shown;
   assert.equal(current.execution_owner,'source');
-  run('handover-brief','--request-id','handover-one','--output',brief);assert.match(fs.readFileSync(brief,'utf8'),/Partial migration/);
+  assert.throws(()=>run('handover-brief','--request-id','handover-one','--output',brief),/Plan belongs to task source/);
+  run('handover-brief','--request-id','handover-one','--output',brief,'--task-id','source');assert.match(fs.readFileSync(brief,'utf8'),/Partial migration/);
   assert.throws(()=>run('handover-brief','--request-id','handover-one','--output',file));
   const before=fs.readFileSync(file,'utf8');
   assert.throws(()=>run('step','update','--step-id','active','--description','wrong task','--base-revision',String(current.revision),'--task-id','other'));

@@ -1,6 +1,4 @@
 import * as fs from "node:fs";
-import { assertPiWaveCompletions } from "./pi/wave-checkpoint";
-import { assertPiReviewCompletions } from "./pi/review-checkpoint";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Plan, record, requireValue as require, validate } from "./model";
@@ -108,7 +106,7 @@ export async function mutatePlan(
   input: string,
   actorId: string | undefined,
   mutation: PlanMutation,
-  options: { cwd?: string; beforeWrite?: () => void } = {},
+  options: { cwd?: string; beforeWrite?: () => void; expectedPlanId?: string } = {},
 ): Promise<PlanMutationResult> {
   const planPath = selectedPlanPath(input, options.cwd);
   require(fs.existsSync(planPath), `Plan does not exist: ${planPath}`);
@@ -117,6 +115,10 @@ export async function mutatePlan(
     // Check before even refreshing external Markdown: refresh is also a write.
     options.beforeWrite?.();
     let current = readSnapshot(planPath, false);
+    // A refresh is itself a write. Fence replacement identity before it, not
+    // only in the transform that runs after external Markdown is refreshed.
+    require(options.expectedPlanId === undefined || current.plan.plan_id === options.expectedPlanId,
+      "The selected plan was replaced.");
     assertExecutionOwner(current.plan, actorId);
     if (current.refresh_required) current = readSnapshot(planPath, true);
     const [candidate, changed] = mutation(current.plan);
@@ -124,8 +126,6 @@ export async function mutatePlan(
     let sourceDigest = current.source_digest;
     let exportWarning: string | undefined;
     if (changed) {
-      assertPiWaveCompletions(planPath, current.plan, plan, actorId);
-      assertPiReviewCompletions(planPath, current.plan, plan, actorId);
       if (path.extname(planPath).toLowerCase() === ".md")
         saveMarkdown(planPath, plan, current.source_digest);
       else {

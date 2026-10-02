@@ -18,12 +18,10 @@
     "build": "tsc --noEmit && node build/build.mjs",
     "test": "node --test tests/*.test.cjs",
     "test:browser": "node tests/browser/run.cjs",
-    "test:pi:runtime": "node --test tests/pi-runtime.test.cjs",
-    "test:pi:runner": "node --test tests/pi-runner.test.cjs",
+    "test:pi:runtime": "node --test --test-name-pattern='real Pi runtime' tests/pi-context.test.cjs",
+    "test:pi:agents": "node --test tests/pi-subagents.test.cjs",
     "test:pi:terminal": "node tests/pi/terminal-smoke.cjs",
     "test:pi:workflow": "node tests/pi/terminal-workflow.cjs",
-    "test:pi:handover": "node tests/pi/terminal-handover.cjs",
-    "test:pi:execution": "node tests/pi/terminal-execution.cjs",
     "check": "npm run build && npm test"
   },
   "peerDependencies": {

@@ -577,6 +577,69 @@ test("render and exports cannot overwrite canonical files", (t) => {
       assert.deepEqual(bytes(p), before);
     }
 });
+for (const dirty of [false, true]) for (const command of ['status', 'render', 'export', 'review-brief', 'handover-brief']) {
+  test(`postfix fix R2: ${command} fences implicit writes on owned Markdown, dirty=${dirty}`, t => {
+    const dir = scratch(t), p = path.join(dir, 'owned.md'), output = path.join(dir, 'output');
+    let plan = a.initialize({ title: 'Owned fixture', steps: [
+      { id: 'work', title: 'Work' },
+      { id: 'review', title: 'Review work', kind: 'review', depends_on: ['work'], checks: ['Inspect work'] },
+    ] });
+    [plan] = a.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision,
+      request_id: 'approval', intent: 'implement', selected_step_ids: ['work'], operations: [] });
+    [plan] = a.checkpoint(plan, plan.revision, 'work', 'in_progress', 'Started fixture');
+    [plan] = a.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision,
+      request_id: 'transfer-context', intent: 'handover', target_step_ids: ['work'], operations: [], handover_reason: 'Fixture' });
+    plan.execution_owner = 'owner';
+    [plan] = a.updateHandover(plan, plan.revision, { request_id: 'transfer-context', state: 'prepared',
+      brief_path: output, summary: 'Fixture prepared', next_action: 'Inspect fixture', code_state: 'Disposable test workspace' }, 'owner');
+    a.saveMarkdown(p, plan);
+    if (dirty) fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace('# Owned fixture', '# External edit'));
+    const recovery = path.join(dir, '.plan-history');
+    fs.rmSync(recovery, { recursive: true, force: true }); // Clean commands must not recreate recovery as a non-owner.
+    const before = bytes(p);
+    const args = [command, '--plan', p, '--output', output];
+    if (command === 'status') args.splice(3, 2);
+    if (command === 'review-brief') args.push('--step-id', 'review');
+    if (command === 'handover-brief') args.push('--request-id', 'transfer-context');
+    for (const actor of ['intruder', '']) {
+      const result = spawnSync(process.execPath, [cli, ...args, ...(actor ? ['--task-id', actor] : [])], {
+        encoding: 'utf8', env: { ...process.env, CODEX_THREAD_ID: '' },
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Plan belongs to task owner/);
+      assert.deepEqual(bytes(p), before);
+      assert.equal(fs.existsSync(recovery), false);
+      assert.equal(fs.existsSync(output), false);
+    }
+    if (dirty && command === 'handover-brief') {
+      // A legitimate refresh still invalidates prepared handover context; ownership must not bypass that check.
+      assert.match(fail(...args, '--task-id', 'owner'), /Context changed; prepare again/);
+      let refreshed = a.read(p);
+      [refreshed] = a.updateHandover(refreshed, refreshed.revision, { request_id: 'transfer-context', state: 'prepared',
+        brief_path: output, summary: 'Refreshed fixture', next_action: 'Inspect fixture', code_state: 'Disposable test workspace after external edit' }, 'owner');
+      a.saveMarkdown(p, refreshed);
+    }
+    const result = run(...args, '--task-id', 'owner');
+    assert.ok(result);
+    assert.equal(fs.existsSync(recovery), true);
+    assert.equal(a.read(p).execution_owner, 'owner');
+    if (dirty) assert.notDeepEqual(bytes(p), before, 'owner can refresh external edits');
+    else assert.deepEqual(bytes(p), before, 'clean owner read does not change canonical content');
+  });
+}
+
+for (const command of ['show', 'next']) test(`postfix fix R2: ${command} remains write-free for a non-owner`, t => {
+  const dir = scratch(t), p = path.join(dir, 'owned.md');
+  const plan = a.initialize({ title: 'Owned fixture', steps: [{ id: 'work', title: 'Work' }] });
+  plan.execution_owner = 'owner'; a.saveMarkdown(p, plan);
+  fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace('# Owned fixture', '# External edit'));
+  fs.rmSync(path.join(dir, '.plan-history'), { recursive: true, force: true });
+  const before = bytes(p);
+  assert.ok(run(command, '--plan', p, '--task-id', 'intruder'));
+  assert.deepEqual(bytes(p), before);
+  assert.equal(fs.existsSync(path.join(dir, '.plan-history')), false);
+});
+
 test("two concurrent CLI writers serialize revisions and preserve only accepted receipt", async (t) => {
   const p = legacy(t);
   const first = writeRequest(
