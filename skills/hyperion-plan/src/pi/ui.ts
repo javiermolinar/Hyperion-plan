@@ -667,31 +667,37 @@ export async function openPlan(args: string, ctx: ExtensionContext, pi: Extensio
 }
 
 
-export const planToolPresentation: Pick<ToolDefinition<any>, "renderCall" | "renderResult"> = {
-    renderCall(value, theme) {
-      const args = (record(value) ? value : {}) as { action?: string; path?: string };
-      const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-      return new Text(`${theme.fg("toolTitle", "Hyperion Plan")} · ${args.action ?? "…"}${args.path ? ` · ${clean(args.path)}` : ""}`, 0, 0);
-    },
-    renderResult(result, options, theme) {
-      if (options.expanded || !record(result.details))
-        return new Text(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"), 0, 0);
-      const data = result.details;
-      if (typeof data.revision !== "number") {
-        const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
-        const warning = data.error || (Array.isArray(data.diagnostics) && data.diagnostics.length)
-          ? " · needs attention" : data.truncated ? " · incomplete scan" : "";
-        return new Text(`Discovery · ${count} candidate(s)${warning}`, 0, 0);
-      }
-      const title = (record(data.summary) && typeof data.summary.title === "string" ? data.summary.title : "Plan")
-        .replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-      const label = data.screen === "queued" ? "Overlay queued until this turn settles"
-        : data.screen === "unavailable" ? "Native overlay unavailable in this mode"
-        : data.action === "submit" ? "Request recorded · execution is not automatic"
-        : data.action === "checkpoint" || data.action === "plan-review" ? "Coordinator outcome recorded · not machine-certified"
-        : data.changed === true ? "Saved · no new implementation approval" : "Inspected";
-      return new Text(`${theme.fg("muted", title)} · r${data.revision}\n${label}`, 0, 0);
-    },
+export const planToolPresentation: Pick<ToolDefinition<any>, "renderShell" | "renderCall" | "renderResult"> = {
+  // Own the shell: Pi's default full-width green success box is unnecessary here.
+  renderShell: "self",
+  renderCall(value, theme, context) {
+    if (context && !context.isPartial && !context.expanded) return { render: () => [], invalidate() {} };
+    const args = (record(value) ? value : {}) as { action?: string; path?: string };
+    const clean = (text: string) => logText(text).replace(/\n/g, " ");
+    return new Text(theme.fg("muted", `Hyperion · ${clean(args.action ?? "…")}${context?.expanded && args.path ? ` · ${clean(args.path)}` : ""}`), 0, 0);
+  },
+  renderResult(result, options, theme, context) {
+    const text = logText(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"));
+    if (options.expanded) return new Text(text, 0, 0);
+    if (context?.isError || !record(result.details)) return new Text(theme.fg("error", text), 0, 0);
+    if (options.isPartial) return new Text(theme.fg("muted", "Updating plan…"), 0, 0);
+    const data = result.details;
+    const clean = (text: string) => logText(text).replace(/\n/g, " ");
+    const prefix = theme.fg("dim", `Hyperion · ${typeof data.action === "string" ? clean(data.action) : "plan"}`);
+    if (typeof data.revision !== "number") {
+      const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
+      const attention = data.error || (Array.isArray(data.diagnostics) && data.diagnostics.length);
+      const label = attention ? "needs attention" : data.truncated ? "incomplete scan" : "discovered";
+      return new Text(`${prefix} › ${count} candidate(s) › ${theme.fg(attention ? "warning" : "muted", label)}`, 0, 0);
+    }
+    const title = record(data.summary) && typeof data.summary.title === "string" ? clean(data.summary.title) : "Plan";
+    const label = data.screen === "queued" ? "overlay queued"
+      : data.screen === "unavailable" ? "overlay unavailable"
+      : data.action === "submit" ? "request recorded · not started"
+      : data.action === "checkpoint" || data.action === "plan-review" ? "outcome recorded · not certified"
+      : data.changed === true ? "saved · no execution approval" : "inspected";
+    return new Text(`${prefix} › ${theme.fg("muted", `${title} · r${data.revision}`)} › ${theme.fg(data.screen === "unavailable" ? "warning" : "dim", label)}`, 0, 0);
+  },
 };
 
 // Observational state only: no execution, cancellation, retry, or plan writes.
@@ -911,12 +917,12 @@ export class AgentScreen implements Component {
   }
 }
 
-export function registerAgentView(pi: ExtensionAPI) {
-  let actor: string | undefined, state = new AgentActivityState(), open = false, statusText = "";
+export function registerAgentView(pi: ExtensionAPI, onStatus: (ctx: ExtensionContext, counts: { active: number; unknown: number }) => void = () => {}) {
+  let actor: string | undefined, state = new AgentActivityState(), open = false;
   const get = (ctx: ExtensionContext) => {
     const id = ctx.sessionManager.getSessionId();
     if (actor !== id) {
-      actor = id; state = new AgentActivityState(); statusText = "";
+      actor = id; state = new AgentActivityState();
       const entries = ctx.sessionManager.getEntries?.() ?? ctx.sessionManager.getBranch();
       state.restore(entries.filter(e => e.type === "custom" && e.customType === AGENT_ENTRY).map(e => (e as any).data));
     }
@@ -926,8 +932,7 @@ export function registerAgentView(pi: ExtensionAPI) {
     if (ctx.mode !== "tui") return;
     const agents = [...state.agents.values()];
     const active = agents.filter(a => a.live).length, unknown = agents.filter(a => !a.live && !a.record.settled).length;
-    const next = agents.length ? `Agents: ${active} active${unknown ? ` · ${unknown} unknown` : ""} · /hyperion → A` : "";
-    if (next !== statusText) { statusText = next; ctx.ui.setStatus?.("hyperion-agents", next || undefined); }
+    onStatus(ctx, { active, unknown });
   };
   const show = async (ctx: ExtensionContext): Promise<"back" | "close"> => {
     if (ctx.mode !== "tui") { ctx.ui.notify("The Agents view requires Pi interactive TUI mode.", "warning"); return "close"; }
@@ -948,38 +953,13 @@ export function registerAgentView(pi: ExtensionAPI) {
       }, { overlay: true, overlayOptions: { width: "96%", maxHeight: "95%", anchor: "center" } });
     } finally { render = undefined; finish = undefined; clearInterval(timer); for (const off of unsubscribers) off?.(); open = false; }
   };
-  pi.on("session_start", (_event, ctx) => {
-    actor = undefined;
-    if (ctx.mode === "tui") ctx.ui.setStatus?.("hyperion-agents", undefined);
-    get(ctx); status(ctx);
-  });
+  const restore = (_event: unknown, ctx: ExtensionContext) => { actor = undefined; get(ctx); status(ctx); };
+  pi.on("session_start", restore);
+  // A branch change does not invalidate a still-observed native assignment.
+  pi.on("session_tree", (_event, ctx) => { get(ctx); status(ctx); });
   return {
     open: show,
     record(ctx: ExtensionContext, r: AgentRecord) { get(ctx).record(r, true); status(ctx); },
     event(ctx: ExtensionContext, id: string, event: AgentSessionEvent) { get(ctx).event(id, event); },
   };
-}
-
-const clean = (text: string, limit = 120) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, limit);
-
-export function progressView(plan: Plan): { fingerprint: string; lines: string[] } {
-  const completed = plan.steps.filter(step => step.status === "completed");
-  const active = plan.steps.filter(step => step.status === "in_progress");
-  const blocked = plan.steps.filter(step => step.blocked_by);
-  const byId = new Map(plan.steps.map(step => [step.id, step]));
-  const next = plan.steps.find(step => step.status === "pending" && !step.blocked_by &&
-    prerequisites(step).every(id => byId.get(id)?.status === "completed"));
-  const scope = plan.execution;
-  const lines = [
-    `${clean(plan.title)} · ${completed.length}/${plan.steps.length} complete`,
-    ...active.slice(0, 2).map(step => `In progress: ${clean(step.title)}${step.progress_note ? ` — ${clean(step.progress_note, 160)}` : ""}`),
-    ...blocked.slice(0, 2).map(step => `Blocked: ${clean(step.title)} — ${clean(step.blocked_by!, 160)}`),
-    ...(next ? [`Next candidate: ${clean(next.title)} (not started)`] : []),
-    scope ? `Execution: ${scope.state} · ${scope.selected_step_ids.length} selected` : "No implementation approved",
-  ];
-  // Include scope and recorded progress, not receipts or revision-only bookkeeping.
-  const fingerprint = digestText(JSON.stringify({ lifecycle: plan.lifecycle ?? "active", title: plan.title,
-    steps: plan.steps.map(step => [step.id, step.title, step.status, step.progress_note, step.blocked_by, step.depends_on, step.run_after]),
-    execution: scope ? [scope.state, scope.selected_step_ids] : null }));
-  return { fingerprint, lines };
 }

@@ -1,8 +1,5 @@
 import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameFromFile } from "node:path"; const __dirname = __dirnameFromFile(__fileURLToPath(import.meta.url));
 
-// src/pi/extension.ts
-import { Text as Text2 } from "@earendil-works/pi-tui";
-
 // src/pi/executor.ts
 import * as fs5 from "node:fs";
 import * as path6 from "node:path";
@@ -2954,65 +2951,59 @@ function persistDraft(pi, snapshot, draft) {
     } : { operations: [] }
   });
 }
-function registerContext(pi, view) {
+function registerContext(pi, publish) {
   const bind = (snapshot) => bindPlan(pi, snapshot);
   const awareness = registerAwareness(pi, latestBinding, bind);
-  registerProgress(pi, latestBinding, view);
+  registerProgress(pi, latestBinding, publish);
   return { ...awareness, binding: latestBinding, bind };
 }
 var PROGRESS_TYPE = "hyperion-plan.progress";
-function registerProgress(pi, binding, progressView2) {
-  let lastKey;
+function registerProgress(pi, binding, publish) {
   let epoch = 0;
   let queue = Promise.resolve();
-  const restore = (ctx) => {
-    epoch++;
-    lastKey = void 0;
-    for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-      if (entry.type !== "custom_message" || entry.customType !== PROGRESS_TYPE || !record(entry.details)) continue;
-      if (typeof entry.details.key === "string") lastKey = entry.details.key;
-      break;
-    }
-  };
-  pi.on("session_start", (_event, ctx) => restore(ctx));
-  pi.on("session_tree", (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", () => {
-    epoch++;
-    lastKey = void 0;
-  });
   const observe = (ctx) => {
-    const generation = epoch;
+    if (ctx.mode !== "tui") return Promise.resolve();
+    const generation = epoch, actor = ctx.sessionManager.getSessionId();
     queue = queue.catch(() => {
     }).then(async () => {
+      if (generation !== epoch || actor !== ctx.sessionManager.getSessionId()) return;
       const selected = binding(ctx);
-      if (!selected || generation !== epoch) return;
+      if (!selected) {
+        publish(ctx);
+        return;
+      }
+      const currentSession = () => {
+        const current = binding(ctx);
+        return generation === epoch && actor === ctx.sessionManager.getSessionId() && current?.path === selected.path && current.plan_id === selected.plan_id;
+      };
       try {
         const snapshot = await loadPlanSnapshot(selected.path, { cwd: ctx.cwd });
-        if (generation !== epoch || snapshot.plan.plan_id !== selected.plan_id) return;
-        const current = binding(ctx);
-        if (current?.path !== selected.path || current.plan_id !== selected.plan_id) return;
-        const { fingerprint, lines } = progressView2(snapshot.plan);
-        const key = `${snapshot.path}\0${selected.plan_id}\0${fingerprint}`;
-        if (snapshot.plan.lifecycle === "finished") {
-          lastKey = key;
+        if (!currentSession()) return;
+        if (snapshot.plan.plan_id !== selected.plan_id) {
+          publish(ctx, void 0, "The bound path contains a different plan");
           return;
         }
-        if (lastKey === key) return;
-        lastKey = key;
-        pi.sendMessage(
-          {
-            customType: PROGRESS_TYPE,
-            display: true,
-            content: [`${lines[0]} \xB7 r${snapshot.plan.revision}`, ...lines.slice(1)].join("\n"),
-            details: { key, path: snapshot.path, plan_id: selected.plan_id, revision: snapshot.plan.revision }
-          },
-          { triggerTurn: false }
-        );
+        publish(ctx, snapshot);
       } catch {
+        if (currentSession()) publish(ctx, void 0, "Cannot read the bound plan; inspect it with hyperion_plan");
       }
     });
     return queue;
   };
+  const restore = (_event, ctx) => {
+    epoch++;
+    return observe(ctx);
+  };
+  pi.on("session_start", restore);
+  pi.on("session_tree", restore);
+  const invalidate = () => {
+    epoch++;
+  };
+  pi.on("session_before_switch", invalidate);
+  pi.on("session_before_tree", invalidate);
+  pi.on("session_before_fork", invalidate);
+  pi.on("session_shutdown", invalidate);
+  pi.on("before_agent_start", (_event, ctx) => observe(ctx));
   pi.on("tool_result", (_event, ctx) => observe(ctx));
   pi.on("turn_end", (_event, ctx) => observe(ctx));
   pi.on("context", (event) => ({ messages: event.messages.filter((message) => !(message.role === "custom" && message.customType === PROGRESS_TYPE)) }));
@@ -4389,24 +4380,32 @@ async function openPlan(args, ctx, pi, isContextCurrent = () => true, openAgents
   }
 }
 var planToolPresentation = {
-  renderCall(value, theme) {
+  // Own the shell: Pi's default full-width green success box is unnecessary here.
+  renderShell: "self",
+  renderCall(value, theme, context) {
+    if (context && !context.isPartial && !context.expanded) return { render: () => [], invalidate() {
+    } };
     const args = record(value) ? value : {};
-    const clean2 = (text) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-    return new Text(`${theme.fg("toolTitle", "Hyperion Plan")} \xB7 ${args.action ?? "\u2026"}${args.path ? ` \xB7 ${clean2(args.path)}` : ""}`, 0, 0);
+    const clean2 = (text) => logText(text).replace(/\n/g, " ");
+    return new Text(theme.fg("muted", `Hyperion \xB7 ${clean2(args.action ?? "\u2026")}${context?.expanded && args.path ? ` \xB7 ${clean2(args.path)}` : ""}`), 0, 0);
   },
-  renderResult(result, options, theme) {
-    if (options.expanded || !record(result.details))
-      return new Text(result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"), 0, 0);
+  renderResult(result, options, theme, context) {
+    const text = logText(result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"));
+    if (options.expanded) return new Text(text, 0, 0);
+    if (context?.isError || !record(result.details)) return new Text(theme.fg("error", text), 0, 0);
+    if (options.isPartial) return new Text(theme.fg("muted", "Updating plan\u2026"), 0, 0);
     const data = result.details;
+    const clean2 = (text2) => logText(text2).replace(/\n/g, " ");
+    const prefix = theme.fg("dim", `Hyperion \xB7 ${typeof data.action === "string" ? clean2(data.action) : "plan"}`);
     if (typeof data.revision !== "number") {
       const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
-      const warning = data.error || Array.isArray(data.diagnostics) && data.diagnostics.length ? " \xB7 needs attention" : data.truncated ? " \xB7 incomplete scan" : "";
-      return new Text(`Discovery \xB7 ${count} candidate(s)${warning}`, 0, 0);
+      const attention = data.error || Array.isArray(data.diagnostics) && data.diagnostics.length;
+      const label2 = attention ? "needs attention" : data.truncated ? "incomplete scan" : "discovered";
+      return new Text(`${prefix} \u203A ${count} candidate(s) \u203A ${theme.fg(attention ? "warning" : "muted", label2)}`, 0, 0);
     }
-    const title = (record(data.summary) && typeof data.summary.title === "string" ? data.summary.title : "Plan").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-    const label = data.screen === "queued" ? "Overlay queued until this turn settles" : data.screen === "unavailable" ? "Native overlay unavailable in this mode" : data.action === "submit" ? "Request recorded \xB7 execution is not automatic" : data.action === "checkpoint" || data.action === "plan-review" ? "Coordinator outcome recorded \xB7 not machine-certified" : data.changed === true ? "Saved \xB7 no new implementation approval" : "Inspected";
-    return new Text(`${theme.fg("muted", title)} \xB7 r${data.revision}
-${label}`, 0, 0);
+    const title = record(data.summary) && typeof data.summary.title === "string" ? clean2(data.summary.title) : "Plan";
+    const label = data.screen === "queued" ? "overlay queued" : data.screen === "unavailable" ? "overlay unavailable" : data.action === "submit" ? "request recorded \xB7 not started" : data.action === "checkpoint" || data.action === "plan-review" ? "outcome recorded \xB7 not certified" : data.changed === true ? "saved \xB7 no execution approval" : "inspected";
+    return new Text(`${prefix} \u203A ${theme.fg("muted", `${title} \xB7 r${data.revision}`)} \u203A ${theme.fg(data.screen === "unavailable" ? "warning" : "dim", label)}`, 0, 0);
   }
 };
 var LOG_LIMIT = 64 * 1024;
@@ -4671,14 +4670,14 @@ ${a.streaming}` : ""}` || "Waiting for the first activity event\u2026" : "No Hyp
     ].slice(0, height).map((line) => truncateToWidth(line, Math.max(1, width)));
   }
 };
-function registerAgentView(pi) {
-  let actor, state = new AgentActivityState(), open = false, statusText = "";
+function registerAgentView(pi, onStatus = () => {
+}) {
+  let actor, state = new AgentActivityState(), open = false;
   const get = (ctx) => {
     const id = ctx.sessionManager.getSessionId();
     if (actor !== id) {
       actor = id;
       state = new AgentActivityState();
-      statusText = "";
       const entries = ctx.sessionManager.getEntries?.() ?? ctx.sessionManager.getBranch();
       state.restore(entries.filter((e) => e.type === "custom" && e.customType === AGENT_ENTRY).map((e) => e.data));
     }
@@ -4688,11 +4687,7 @@ function registerAgentView(pi) {
     if (ctx.mode !== "tui") return;
     const agents = [...state.agents.values()];
     const active = agents.filter((a) => a.live).length, unknown = agents.filter((a) => !a.live && !a.record.settled).length;
-    const next = agents.length ? `Agents: ${active} active${unknown ? ` \xB7 ${unknown} unknown` : ""} \xB7 /hyperion \u2192 A` : "";
-    if (next !== statusText) {
-      statusText = next;
-      ctx.ui.setStatus?.("hyperion-agents", next || void 0);
-    }
+    onStatus(ctx, { active, unknown });
   };
   const show = async (ctx) => {
     if (ctx.mode !== "tui") {
@@ -4744,9 +4739,13 @@ function registerAgentView(pi) {
       open = false;
     }
   };
-  pi.on("session_start", (_event, ctx) => {
+  const restore = (_event, ctx) => {
     actor = void 0;
-    if (ctx.mode === "tui") ctx.ui.setStatus?.("hyperion-agents", void 0);
+    get(ctx);
+    status(ctx);
+  };
+  pi.on("session_start", restore);
+  pi.on("session_tree", (_event, ctx) => {
     get(ctx);
     status(ctx);
   });
@@ -4761,28 +4760,139 @@ function registerAgentView(pi) {
     }
   };
 }
-var clean = (text, limit = 120) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, limit);
-function progressView(plan) {
-  const completed = plan.steps.filter((step) => step.status === "completed");
-  const active = plan.steps.filter((step) => step.status === "in_progress");
-  const blocked = plan.steps.filter((step) => step.blocked_by);
-  const byId = new Map(plan.steps.map((step) => [step.id, step]));
-  const next = plan.steps.find((step) => step.status === "pending" && !step.blocked_by && prerequisites(step).every((id) => byId.get(id)?.status === "completed"));
-  const scope = plan.execution;
-  const lines = [
-    `${clean(plan.title)} \xB7 ${completed.length}/${plan.steps.length} complete`,
-    ...active.slice(0, 2).map((step) => `In progress: ${clean(step.title)}${step.progress_note ? ` \u2014 ${clean(step.progress_note, 160)}` : ""}`),
-    ...blocked.slice(0, 2).map((step) => `Blocked: ${clean(step.title)} \u2014 ${clean(step.blocked_by, 160)}`),
-    ...next ? [`Next candidate: ${clean(next.title)} (not started)`] : [],
-    scope ? `Execution: ${scope.state} \xB7 ${scope.selected_step_ids.length} selected` : "No implementation approved"
-  ];
-  const fingerprint = digestText(JSON.stringify({
-    lifecycle: plan.lifecycle ?? "active",
-    title: plan.title,
-    steps: plan.steps.map((step) => [step.id, step.title, step.status, step.progress_note, step.blocked_by, step.depends_on, step.run_after]),
-    execution: scope ? [scope.state, scope.selected_step_ids] : null
-  }));
-  return { fingerprint, lines };
+
+// src/pi/footer.ts
+import { truncateToWidth as truncateToWidth2, visibleWidth as visibleWidth2 } from "@earendil-works/pi-tui";
+var FOOTER_KEY = "hyperion-plan";
+var clean = (text) => text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ").replace(/\s+/g, " ").trim();
+var PlanFooter = class {
+  plan;
+  agents = { active: 0, unknown: 0 };
+  error;
+  render(width, theme) {
+    if (width < 1) return [];
+    const fit = (text) => truncateToWidth2(text, width);
+    const muted = (text) => theme.fg("muted", text);
+    const separator = theme.fg("dim", " \u203A ");
+    if (this.error) return [
+      fit(theme.fg("warning", ` \u25A3 Plan unavailable: ${clean(this.error)}`)),
+      fit(muted(` ${this.agents.active} agents${this.agents.unknown ? ` \u203A ${this.agents.unknown} unknown` : ""}`))
+    ];
+    const plan = this.plan;
+    if (!plan || plan.lifecycle === "finished") return this.agents.active || this.agents.unknown ? [fit(theme.fg("accent", " \u25A3 Hyperion") + separator + muted(`${this.agents.active} agents`) + (this.agents.unknown ? separator + theme.fg("warning", `${this.agents.unknown} unknown`) : ""))] : [];
+    const incomplete = plan.steps.filter((step2) => step2.status !== "completed");
+    const completed = plan.steps.length - incomplete.length;
+    const active = incomplete.filter((step2) => step2.status === "in_progress");
+    const selected = new Set(plan.execution?.selected_step_ids ?? []);
+    const scope = incomplete.filter((step2) => selected.has(step2.id));
+    const byId = new Map(plan.steps.map((step2) => [step2.id, step2]));
+    const ready = (step2) => !step2.blocked_by && prerequisites(step2).every((id) => byId.get(id)?.status === "completed");
+    const next = (scope.length ? scope : incomplete).find(ready);
+    const current = active[0];
+    const blockers = incomplete.filter((step2) => step2.blocked_by).map((step2) => `${clean(step2.id)}: ${clean(step2.blocked_by)}`);
+    if (!active.length && scope.length && !scope.some(ready) && !blockers.length) {
+      const waiting = scope[0];
+      blockers.push(`${clean(waiting.id)}: waiting for ${prerequisites(waiting).filter((id) => byId.get(id)?.status !== "completed").map(clean).join(", ")}`);
+    }
+    for (const review of plan.plan_reviews ?? []) if (review.state === "blocked") blockers.push(clean(review.note ?? "Independent plan review blocked"));
+    for (const handover of plan.handovers ?? []) if (handover.state === "blocked") blockers.push(clean(handover.note ?? "Handover blocked"));
+    if (this.agents.unknown) blockers.push(`${this.agents.unknown} assignment${this.agents.unknown === 1 ? " has" : "s have"} unknown settlement; inspect Agents`);
+    const cells = width >= 80 ? 10 : width >= 48 ? 6 : 4;
+    const filled = plan.steps.length ? Math.floor(completed / plan.steps.length * cells) : 0;
+    const progressColor = completed === plan.steps.length && completed > 0 ? "success" : "accent";
+    const progress = muted("[") + theme.fg(progressColor, "\u2588".repeat(filled)) + theme.fg("dim", "\u2591".repeat(cells - filled)) + muted("] ") + theme.fg(progressColor, `${completed}/${plan.steps.length}`);
+    const title = theme.fg("accent", `\u25A3 ${clean(plan.title)}`);
+    const executionState = plan.execution?.state;
+    const label = executionState === "paused" ? "Paused" : executionState === "cancelled" ? "Cancelled" : current ? "Current" : !incomplete.length && plan.steps.length ? "Complete" : next ? "Next" : "Waiting";
+    const step = current ?? next;
+    const stepText = `${label}${step ? ` ${clean(step.id)} ${clean(step.short_title ?? step.title)}` : plan.steps.length ? "" : " \xB7 No steps yet"}${active.length > 1 ? ` (+${active.length - 1})` : ""}`;
+    const currentText = theme.fg(executionState === "paused" || executionState === "cancelled" ? "warning" : current ? "text" : "muted", stepText);
+    const metrics = [
+      theme.fg(this.agents.active ? "accent" : "muted", `${this.agents.active} agents`),
+      ...this.agents.unknown ? [theme.fg("warning", `${this.agents.unknown} unknown`)] : [],
+      theme.fg(blockers.length ? "warning" : "success", blockers.length ? `! ${blockers.length} blocker${blockers.length === 1 ? "" : "s"}` : "\u2713 No blockers")
+    ];
+    const join8 = (parts) => " " + parts.join(separator);
+    const names = (budget2) => {
+      const titleWidth = visibleWidth2(title), stepWidth = visibleWidth2(currentText);
+      const titleBudget = Math.min(titleWidth, Math.max(Math.min(16, titleWidth), Math.floor(budget2 * 0.35)), budget2 - Math.min(24, stepWidth));
+      const stepBudget = Math.min(stepWidth, budget2 - titleBudget);
+      return [truncateToWidth2(title, Math.max(1, budget2 - stepBudget)), truncateToWidth2(currentText, Math.max(1, stepBudget))];
+    };
+    const shortFields = [progress, ...metrics];
+    const budget = width - 1 - shortFields.reduce((total, field) => total + visibleWidth2(field), 0) - (shortFields.length + 1) * 3;
+    const minimumNames = Math.min(16, visibleWidth2(title)) + Math.min(24, visibleWidth2(currentText));
+    const rows = [];
+    if (budget >= minimumNames) rows.push(fit(join8([...names(budget), ...shortFields])));
+    else {
+      const headerBudget = width - 1 - visibleWidth2(progress) - 6;
+      if (headerBudget >= minimumNames) rows.push(fit(join8([...names(headerBudget), progress])));
+      else {
+        rows.push(fit(join8([truncateToWidth2(title, Math.max(1, width - 4 - visibleWidth2(progress))), progress])));
+        rows.push(fit(" " + currentText));
+      }
+      const metricRows = [];
+      for (const metric of metrics) {
+        const last = metricRows.length - 1;
+        if (last >= 0 && visibleWidth2(metricRows[last]) + 3 + visibleWidth2(metric) <= width) metricRows[last] += separator + metric;
+        else metricRows.push(fit(" " + metric));
+      }
+      rows.push(...metricRows);
+    }
+    if (blockers.length) rows.push(fit(theme.fg("warning", ` ! ${blockers[0]}${blockers.length > 1 ? ` (+${blockers.length - 1} more)` : ""}`)));
+    return rows;
+  }
+};
+function registerPlanFooter(pi) {
+  let state = new PlanFooter(), ctx, actor;
+  let render;
+  const refresh = () => render?.();
+  const attach = (context) => {
+    if (ctx?.mode === context.mode && actor === context.sessionManager.getSessionId()) {
+      ctx = context;
+      return;
+    }
+    const changed = actor !== context.sessionManager.getSessionId();
+    ctx = context;
+    actor = context.sessionManager.getSessionId();
+    if (changed) state = new PlanFooter();
+    if (context.mode !== "tui") return;
+    context.ui.setWidget?.(FOOTER_KEY, (tui, theme) => {
+      render = () => tui.requestRender();
+      return { render: (width) => state.render(width, theme), invalidate() {
+      }, dispose() {
+        render = void 0;
+      } };
+    }, { placement: "aboveEditor" });
+  };
+  const reset = (_event, context) => {
+    render = void 0;
+    ctx = void 0;
+    actor = void 0;
+    state = new PlanFooter();
+    attach(context);
+  };
+  pi.on("session_start", reset);
+  pi.on("session_tree", reset);
+  pi.on("session_shutdown", (_event, context) => {
+    render = void 0;
+    ctx = void 0;
+    actor = void 0;
+    if (context.mode === "tui") context.ui.setWidget?.(FOOTER_KEY, void 0);
+  });
+  return {
+    update(context, snapshot, error) {
+      attach(context);
+      state.plan = snapshot?.plan;
+      state.error = error;
+      refresh();
+    },
+    agents(context, counts) {
+      attach(context);
+      state.agents = counts;
+      refresh();
+    }
+  };
 }
 
 // src/pi/extension.ts
@@ -4800,12 +4910,13 @@ function extension_default(pi) {
       screenOpen = false;
     }
   };
-  const context = registerContext(pi, progressView);
-  pi.registerMessageRenderer(PROGRESS_TYPE, (message, _options, theme) => new Text2(`${theme.fg("accent", "HYPERION \xB7 PROGRESS")}
-${typeof message.content === "string" ? message.content : ""}`, 1, 1));
+  const footer = registerPlanFooter(pi);
+  const context = registerContext(pi, footer.update);
+  pi.registerMessageRenderer(PROGRESS_TYPE, () => ({ render: () => [], invalidate() {
+  } }));
   registerPlanTool(pi, { ...context, open: (ctx) => show("", ctx), presentation: planToolPresentation });
   registerOwnerFence(pi);
-  const agents = registerAgentView(pi);
+  const agents = registerAgentView(pi, footer.agents);
   if (process.env.HYPERION_DISABLE_AGENTS !== "1") registerAgentTool(pi, agents);
   pi.registerCommand("hyperion", {
     description: "Open a canonical Hyperion plan and its agents in one terminal view",

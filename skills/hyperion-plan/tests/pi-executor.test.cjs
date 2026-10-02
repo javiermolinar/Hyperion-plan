@@ -243,10 +243,10 @@ test('historical source owner fence uses all entries, even when the active branc
   assert.ok(results.some(r => r?.block && /does not own/.test(r.reason)));
   await assert.rejects(handlers.get('user_bash')[0]({}, ctx), /does not own/);
 });
-test('production boundaries are five files with no reverse core or handler plan imports', () => {
-  assert.deepEqual(fs.readdirSync(path.join(root, 'src/pi')).sort(), ['context.ts', 'executor.ts', 'extension.ts', 'subagents.ts', 'ui.ts']);
+test('production boundaries separate footer presentation with no reverse core or handler plan imports', () => {
+  assert.deepEqual(fs.readdirSync(path.join(root, 'src/pi')).sort(), ['context.ts', 'executor.ts', 'extension.ts', 'footer.ts', 'subagents.ts', 'ui.ts']);
   assert.deepEqual(fs.readdirSync(path.join(root, 'tests')).filter(f => /^pi.*\.test\.cjs$/.test(f)).sort(),
-    ['pi-context.test.cjs', 'pi-executor.test.cjs', 'pi-intent.test.cjs', 'pi-subagents.test.cjs', 'pi-ui.test.cjs']);
+    ['pi-context.test.cjs', 'pi-executor.test.cjs', 'pi-footer.test.cjs', 'pi-intent.test.cjs', 'pi-subagents.test.cjs', 'pi-ui.test.cjs']);
   assert.deepEqual(fs.readdirSync(path.join(root, 'tests/pi')).sort(), ['fixture.ts', 'terminal-smoke.cjs', 'terminal-workflow.cjs']);
   for (const file of ['service.ts', 'cli.ts']) assert.doesNotMatch(fs.readFileSync(path.join(root, 'src', file), 'utf8'), /from ["']\.\/pi\//);
   assert.doesNotMatch(fs.readFileSync(path.join(root, 'src/pi/subagents.ts'), 'utf8'), /from ["']\.\.\/(model|service|transitions|execution-policy)/);
@@ -282,7 +282,7 @@ async function harness(t, mode = "tui") {
     { id: "b", title: "Second", status: "pending", depends_on: ["a"] },
   ] });
   core.saveMarkdown(planPath, plan);
-  const entries = [], notifications = [], events = new Map(), handlers = new Map(), screens = [], messages = [];
+  const entries = [], notifications = [], events = new Map(), handlers = new Map(), screens = [], messages = [], widgets = new Map();
   let tool, idle = false, session = "tool-session", counter = 0;
   const pi = {
     registerCommand(_name, value) { this.command = value; },
@@ -308,6 +308,12 @@ async function harness(t, mode = "tui") {
     sessionManager: { getSessionId: () => session, getBranch: () => entries },
     ui: {
       notify: (message, type) => notifications.push({ message, type }),
+      setWidget(key, factory, options) {
+        assert.deepEqual(options, factory ? { placement: 'aboveEditor' } : undefined);
+        widgets.get(key)?.dispose?.();
+        if (factory) widgets.set(key, factory({ requestRender() {} }, theme));
+        else widgets.delete(key);
+      },
       input: () => assert.fail("Prompt tools must not ask for paths through a dialog"),
       confirm: () => assert.fail("Prompt tools must not create implicitly"),
       custom: async factory => {
@@ -318,8 +324,9 @@ async function harness(t, mode = "tui") {
     },
   };
   (await import("../dist/hyperion-plan-pi.js")).default(pi);
+  t.after(() => events.get('session_shutdown')?.({}, ctx));
   return {
-    dir, planPath, plan, entries, notifications, events, screens, messages, ctx, tool, command: pi.command,
+    dir, planPath, plan, entries, notifications, events, screens, messages, widgets, ctx, tool, command: pi.command,
     setIdle: value => { idle = value; },
     call: (params, signal, id = `call-${++counter}`) => tool.execute(id, params, signal, undefined, ctx),
     read: () => core.loadPlanSnapshot(planPath),
@@ -510,18 +517,18 @@ test("canonical tool edits preserve unsent UI drafts and surface stale conflicts
   assert.equal((await h.read()).plan.steps[0].title, "Renamed");
 });
 
-test('inline progress observes canonical changes without focus, duplicates, or execution authority', async t => {
-  const h = await harness(t, 'json');
+test('footer observes canonical changes without transcript messages, focus, or execution authority', async t => {
+  const h = await harness(t);
   await h.call({ action: 'open', path: 'plan.md' });
   const observe = () => h.events.get('tool_result')({}, h.ctx);
+  const footer = () => h.widgets.get('hyperion-plan')?.render(120).join('\n') ?? '';
   await observe();
-  assert.equal(h.messages.length, 1);
-  assert.match(h.messages[0].content, /0\/2 complete/);
-  assert.match(h.messages[0].content, /No implementation approved/);
+  assert.match(footer(), /0\/2/);
+  assert.match(footer(), /Next a First/);
   await observe();
   await h.events.get('session_start')({}, h.ctx);
   await observe();
-  assert.equal(h.messages.length, 1, 'restoration must not repeat the same snapshot');
+  assert.equal(h.messages.length, 0, 'progress must never enter the transcript');
   let plan = (await h.read()).plan;
   [plan] = core.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision,
     request_id: 'test-approval', intent: 'implement', operations: [], selected_step_ids: ['a'] });
@@ -529,17 +536,19 @@ test('inline progress observes canonical changes without focus, duplicates, or e
   core.saveMarkdown(h.planPath, plan);
   const before = fs.readFileSync(h.planPath);
   await observe();
-  assert.match(h.messages.at(-1).content, /In progress: First/);
+  assert.match(footer(), /Current a First/);
+  assert.match(footer(), /\[░{10}\] 0\/2/);
+  assert.doesNotMatch(footer(), /ETA|◷/);
   assert.deepEqual(fs.readFileSync(h.planPath), before);
   [plan] = core.checkpoint(plan, plan.revision, 'a', 'completed', 'Test completion evidence');
   core.saveMarkdown(h.planPath, plan);
   await h.events.get('turn_end')({}, h.ctx);
-  assert.match(h.messages.at(-1).content, /1\/2 complete/);
-  assert.match(h.messages.at(-1).content, /Next candidate: Second/);
-  const count = h.messages.length;
+  assert.match(footer(), /1\/2/);
+  assert.match(footer(), /Next b Second/);
   await h.call(mutation(await h.read(), { action: 'finish', operations: undefined }));
   await observe();
-  assert.equal(h.messages.length, count, 'finished plan stays quiet');
+  assert.equal(footer(), '', 'finished plan stays quiet');
+  assert.equal(h.messages.length, 0);
   assert.equal(h.screens.length, 0);
 });
 

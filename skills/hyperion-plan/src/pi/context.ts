@@ -294,56 +294,48 @@ export function persistDraft(pi: ExtensionAPI, snapshot: PlanSnapshot, draft: {
     } : { operations: [] }),
   });
 }
-export function registerContext(pi: ExtensionAPI, view: (plan: Plan) => { fingerprint: string; lines: string[] }) {
+export function registerContext(pi: ExtensionAPI, publish: (ctx: ExtensionContext, snapshot?: PlanSnapshot, error?: string) => void) {
   const bind = (snapshot: PlanSnapshot) => bindPlan(pi, snapshot);
   const awareness = registerAwareness(pi, latestBinding, bind);
-  registerProgress(pi, latestBinding, view);
+  registerProgress(pi, latestBinding, publish);
   return { ...awareness, binding: latestBinding, bind };
 }
 export const PROGRESS_TYPE = "hyperion-plan.progress";
 
 /** Observe canonical saves; never select work, continue a turn, or focus an overlay. */
-function registerProgress(pi: ExtensionAPI, binding: (ctx: ExtensionContext) => BindingData | undefined, progressView: (plan: Plan) => { fingerprint: string; lines: string[] }): void {
-  let lastKey: string | undefined;
+function registerProgress(pi: ExtensionAPI, binding: (ctx: ExtensionContext) => BindingData | undefined,
+  publish: (ctx: ExtensionContext, snapshot?: PlanSnapshot, error?: string) => void): void {
   let epoch = 0;
   let queue = Promise.resolve();
-  const restore = (ctx: ExtensionContext) => {
-    epoch++;
-    lastKey = undefined;
-    for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-      if (entry.type !== "custom_message" || entry.customType !== PROGRESS_TYPE || !record(entry.details)) continue;
-      if (typeof entry.details.key === "string") lastKey = entry.details.key;
-      break;
-    }
-  };
-  pi.on("session_start", (_event, ctx) => restore(ctx));
-  pi.on("session_tree", (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", () => { epoch++; lastKey = undefined; });
   const observe = (ctx: ExtensionContext): Promise<void> => {
-    const generation = epoch;
+    if (ctx.mode !== "tui") return Promise.resolve();
+    const generation = epoch, actor = ctx.sessionManager.getSessionId();
     queue = queue.catch(() => {}).then(async () => {
+      if (generation !== epoch || actor !== ctx.sessionManager.getSessionId()) return;
       const selected = binding(ctx);
-      if (!selected || generation !== epoch) return;
+      if (!selected) { publish(ctx); return; }
+      const currentSession = () => {
+        const current = binding(ctx);
+        return generation === epoch && actor === ctx.sessionManager.getSessionId() &&
+          current?.path === selected.path && current.plan_id === selected.plan_id;
+      };
       try {
         const snapshot = await loadPlanSnapshot(selected.path, { cwd: ctx.cwd });
-        if (generation !== epoch || snapshot.plan.plan_id !== selected.plan_id) return;
-        const current = binding(ctx);
-        if (current?.path !== selected.path || current.plan_id !== selected.plan_id) return;
-        const { fingerprint, lines } = progressView(snapshot.plan);
-        const key = `${snapshot.path}\0${selected.plan_id}\0${fingerprint}`;
-        if (snapshot.plan.lifecycle === "finished") { lastKey = key; return; }
-        if (lastKey === key) return;
-        lastKey = key;
-        pi.sendMessage({ customType: PROGRESS_TYPE, display: true,
-          content: [`${lines[0]} · r${snapshot.plan.revision}`, ...lines.slice(1)].join("\n"),
-          details: { key, path: snapshot.path, plan_id: selected.plan_id, revision: snapshot.plan.revision } },
-        { triggerTurn: false });
+        if (!currentSession()) return;
+        if (snapshot.plan.plan_id !== selected.plan_id) { publish(ctx, undefined, "The bound path contains a different plan"); return; }
+        publish(ctx, snapshot);
       } catch {
-        // Missing/invalid/replaced files belong in explicit inspection diagnostics, not repeated progress noise.
+        if (currentSession()) publish(ctx, undefined, "Cannot read the bound plan; inspect it with hyperion_plan");
       }
     });
     return queue;
   };
+  const restore = (_event: unknown, ctx: ExtensionContext) => { epoch++; return observe(ctx); };
+  pi.on("session_start", restore); pi.on("session_tree", restore);
+  const invalidate = () => { epoch++; };
+  pi.on("session_before_switch", invalidate); pi.on("session_before_tree", invalidate);
+  pi.on("session_before_fork", invalidate); pi.on("session_shutdown", invalidate);
+  pi.on("before_agent_start", (_event, ctx) => observe(ctx));
   pi.on("tool_result", (_event, ctx) => observe(ctx));
   pi.on("turn_end", (_event, ctx) => observe(ctx));
   // Progress messages are display history, not instructions or repeated model context.

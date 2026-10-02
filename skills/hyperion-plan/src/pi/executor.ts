@@ -33,7 +33,7 @@ interface ScreenIntentState {
 }
 interface Binding { path: string; plan_id: string }
 interface PlanToolHost {
-  presentation?: Pick<ToolDefinition<any>, "renderCall" | "renderResult">;
+  presentation?: Pick<ToolDefinition<any>, "renderShell" | "renderCall" | "renderResult">;
   binding(ctx: ExtensionContext): Binding | undefined;
   bind(snapshot: PlanSnapshot): void;
   open(ctx: ExtensionContext): Promise<void>;
