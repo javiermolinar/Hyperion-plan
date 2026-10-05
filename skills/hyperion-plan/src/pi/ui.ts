@@ -27,6 +27,14 @@ import { piRunBlocker, piStepBlocker, piMutationBlocker, handleScreenAction, loa
 export type PlanScreenAction = CoreScreenAction | { type: "agents" };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+// Plan text, paths and agent output are data. Strip terminal commands before
+// wrapping or applying trusted theme ANSI; preserve Unicode and paragraph breaks.
+const terminalText = (text: string) => text
+  .replace(/(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)/g, "")
+  .replace(/(?:\x1b[P_X^]|[\x90\x98\x9e\x9f])[\s\S]*?(?:\x1b\\|\x9c|$)/g, "")
+  .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
+  .replace(/\x1b[ -/]*[@-Z\\-_]/g, "")
+  .replace(/\t/g, "    ").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
 
 type Foreground = "accent" | "border" | "muted" | "warning" | "success" | "error" | "dim" | "text";
 type Background = "selectedBg";
@@ -386,7 +394,7 @@ export class PlanScreen implements Component, Focusable {
       else if (step.review_state === "needs_review") tags.push("changed · review advisory");
       if (step.depends_on?.length) tags.push(`needs ${step.depends_on.join(",")}`);
       if (step.run_after) tags.push(`run after ${step.run_after}`);
-      entries.push({ text: muted(`      ${tags.join(" · ")}`), stepId: step.id });
+      entries.push({ text: muted(`      ${this.singleLine(tags.join(" · "))}`), stepId: step.id });
     }
     const focusLine = entries.findIndex(entry => entry.stepId === state.focusedStepId && entry.checkbox);
     if (focusLine < state.listOffset) state.listOffset = Math.max(0, focusLine - 1);
@@ -445,18 +453,18 @@ export class PlanScreen implements Component, Focusable {
     ];
   }
 
-  private singleLine(value: string): string { return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim(); }
+  private singleLine(value: string): string { return terminalText(value).replace(/\s+/g, " ").trim(); }
 
   private displayNotice(state: PlanScreenState): string {
-    return state.dirty ? `Draft preserved: ${state.notice}` : state.notice;
+    return terminalText(state.dirty ? `Draft preserved: ${state.notice}` : state.notice);
   }
 
   private detailLines(plan: Plan, step?: Step): string[] {
     const theme = this.theme;
-    const wrap = (value: string) => wrapTextWithAnsi(value, Math.max(1, this.detailWidth));
+    const wrap = (value: string) => wrapTextWithAnsi(terminalText(value), Math.max(1, this.detailWidth));
     if (!step) return [theme.fg("accent", "EMPTY PLAN"), "", ...wrap("No steps yet. Ask Pi in chat to add the first step."), "", theme.fg("muted", "Creating or editing a plan never authorizes implementation.")];
     const byId = new Map(plan.steps.map(item => [item.id, item]));
-    const lines: string[] = [theme.fg("accent", `STEP ${step.id} / ${(step.kind ?? "implementation").toUpperCase()}`), ...wrap(theme.bold(step.title)), ""];
+    const lines: string[] = [theme.fg("accent", `STEP ${step.id} / ${(step.kind ?? "implementation").toUpperCase()}`), ...wrap(step.title).map(line => theme.bold(line)), ""];
     if (step.description) lines.push(theme.fg("muted", "DESCRIPTION"), ...wrap(step.description), "");
     if (step.done_when) lines.push(theme.fg("muted", "ACCEPTANCE CRITERIA"), ...wrap(step.done_when), "");
     if (step.checks?.length) {
@@ -469,7 +477,7 @@ export class PlanScreen implements Component, Focusable {
     if (step.progress_note) lines.push(...wrap(`Recorded result: ${step.progress_note}`));
     if (step.blocked_by) lines.push(theme.fg("error", "Blocked by"), ...wrap(step.blocked_by));
     if (step.needs_replanning) lines.push(theme.fg("warning", "Needs replanning before resuming updated scope."));
-    else if (step.review_state === "needs_review") lines.push(theme.fg("warning", `Changed since last review: ${step.review_note || "Inspect changed assumptions during Run."} This warning is advisory.`));
+    else if (step.review_state === "needs_review") lines.push(theme.fg("warning", `Changed since last review: ${this.singleLine(step.review_note || "Inspect changed assumptions during Run.")} This warning is advisory.`));
     if (step.scope_warning) lines.push(theme.fg("warning", "Scope warning"), ...wrap(step.scope_warning));
     const deps = prerequisites(step);
     lines.push(...wrap(`Prerequisites: ${deps.length ? deps.map(id => `${id} (${byId.get(id)?.short_title || byId.get(id)?.title || id})`).join(", ") : "none"}`));
@@ -520,7 +528,7 @@ async function choosePlanPath(args: string, ctx: ExtensionContext): Promise<Sele
   if (discovery.truncated) ctx.ui.notify("Plan discovery is incomplete. Choose a plan explicitly.", "warning");
   const candidates = discovery.candidates.filter(candidate => candidate.lifecycle !== "finished");
   if (candidates.length) {
-    const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+    const clean = (text: string) => terminalText(text).replace(/\n/g, " ");
     const options = candidates.map((candidate, index) =>
       `${index + 1}. ${clean(path.relative(ctx.cwd, candidate.path))} — ${clean(candidate.title)}`);
     const other = "Enter another plan path…";
@@ -673,16 +681,16 @@ export const planToolPresentation: Pick<ToolDefinition<any>, "renderShell" | "re
   renderCall(value, theme, context) {
     if (context && !context.isPartial && !context.expanded) return { render: () => [], invalidate() {} };
     const args = (record(value) ? value : {}) as { action?: string; path?: string };
-    const clean = (text: string) => logText(text).replace(/\n/g, " ");
+    const clean = (text: string) => terminalText(text).replace(/\n/g, " ");
     return new Text(theme.fg("muted", `Hyperion · ${clean(args.action ?? "…")}${context?.expanded && args.path ? ` · ${clean(args.path)}` : ""}`), 0, 0);
   },
   renderResult(result, options, theme, context) {
-    const text = logText(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"));
+    const text = terminalText(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"));
     if (options.expanded) return new Text(text, 0, 0);
     if (context?.isError || !record(result.details)) return new Text(theme.fg("error", text), 0, 0);
     if (options.isPartial) return new Text(theme.fg("muted", "Updating plan…"), 0, 0);
     const data = result.details;
-    const clean = (text: string) => logText(text).replace(/\n/g, " ");
+    const clean = (text: string) => terminalText(text).replace(/\n/g, " ");
     const prefix = theme.fg("dim", `Hyperion · ${typeof data.action === "string" ? clean(data.action) : "plan"}`);
     if (typeof data.revision !== "number") {
       const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
@@ -702,8 +710,6 @@ export const planToolPresentation: Pick<ToolDefinition<any>, "renderShell" | "re
 
 // Observational state only: no execution, cancellation, retry, or plan writes.
 const LOG_LIMIT = 64 * 1024;
-const logText = (text: string) => text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
-  .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\t/g, "    ").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
 const messageText = (message: { content?: unknown }) => Array.isArray(message.content)
   ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
 export interface AgentActivity {
@@ -737,7 +743,7 @@ export class AgentActivityState {
   }
   private append(id: string, text: string): void {
     const a = this.agents.get(id)!;
-    const next = a.log + (a.log && text ? "\n" : "") + logText(text);
+    const next = a.log + (a.log && text ? "\n" : "") + terminalText(text);
     a.clipped ||= next.length > LOG_LIMIT;
     a.log = next.slice(-LOG_LIMIT);
   }
@@ -751,7 +757,7 @@ export class AgentActivityState {
     } else if (event.type === "message_update" && event.message.role === "assistant") {
       a.activity = "Generating response";
       // Display response text only, not private reasoning or provider payloads.
-      const text = logText(messageText(event.message));
+      const text = terminalText(messageText(event.message));
       a.clipped ||= text.length > LOG_LIMIT;
       a.streaming = text.slice(-LOG_LIMIT);
     } else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -804,7 +810,7 @@ export class AgentActivityState {
         } else if (m.role === "toolResult") this.append(id, `${m.isError ? "✗" : "✓"} ${m.toolName}\n${messageText(m)}`);
       }
       // A single large JSONL message can exceed the tail window entirely.
-      if (a.record.report && !a.log.endsWith(logText(a.record.report).slice(-LOG_LIMIT)))
+      if (a.record.report && !a.log.endsWith(terminalText(a.record.report).slice(-LOG_LIMIT)))
         this.append(id, `Recorded report\n${a.record.report}`);
     } catch (error) {
       this.append(id, `Transcript unavailable: ${errorMessage(error)}`);
@@ -880,7 +886,7 @@ export class AgentScreen implements Component {
     if (key !== this.listKey) {
       this.listKey = key;
       this.list = new SelectList(agents.map(a => ({ value: a.record.id,
-        label: `${status(a)} · ${logText(a.record.title ?? a.record.id).replace(/\n/g, " ")}` })), this.bodyRows, {
+        label: `${status(a)} · ${terminalText(a.record.title ?? a.record.id).replace(/\n/g, " ")}` })), this.bodyRows, {
         selectedPrefix: text => this.theme.fg("accent", text), selectedText: text => this.theme.fg("accent", text),
         description: text => this.theme.fg("muted", text), scrollInfo: text => this.theme.fg("dim", text),
         noMatch: text => this.theme.fg("muted", text),
@@ -894,7 +900,7 @@ export class AgentScreen implements Component {
     const text = a ? `${a.clipped ? "[Recent log only · complete transcript retained]\n" : ""}${a.log}${a.streaming ? `\nAssistant (streaming)\n${a.streaming}` : ""}`
       || "Waiting for the first activity event…" : "No Hyperion assignments in this coordinator session.";
     const logKey = `${rightWidth}\0${text}`;
-    if (this.logKey !== logKey) { this.logKey = logKey; this.wrapped = text.split("\n").flatMap(line => wrapTextWithAnsi(logText(line), rightWidth)); }
+    if (this.logKey !== logKey) { this.logKey = logKey; this.wrapped = text.split("\n").flatMap(line => wrapTextWithAnsi(terminalText(line), rightWidth)); }
     this.logs.updateLayout(this.wrapped.length, this.bodyRows, this.refresh);
     const right = this.logs.render(rightWidth).slice(this.logs.scrollTop, this.logs.scrollTop + this.bodyRows);
     const left = agents.length ? this.list!.render(wide ? leftWidth : w) : [this.theme.fg("muted", "No assignments")];
@@ -902,7 +908,7 @@ export class AgentScreen implements Component {
       ? fit(left[i] ?? "", leftWidth) + this.theme.fg("border", " │ ") + fit(right[i] ?? "", rightWidth)
       : fit((this.focus === "agents" ? left : right)[i] ?? ""));
     const elapsed = a?.record.started_at ? `${Math.max(0, Math.floor(((a.live ? Date.now() : a.record.updated_at ?? Date.now()) - a.record.started_at) / 1000))}s` : "";
-    const activity = a ? `${status(a)}${elapsed ? ` · ${elapsed}` : ""} · ${logText(a.activity).replace(/\n/g, " ")}` : "No assignments yet";
+    const activity = a ? `${status(a)}${elapsed ? ` · ${elapsed}` : ""} · ${terminalText(a.activity).replace(/\n/g, " ")}` : "No assignments yet";
     const idle = a?.live && a.lastEventAt ? ` · last event ${Math.floor((Date.now() - a.lastEventAt) / 1000)}s ago` : "";
     const contents = [this.theme.fg("accent", "HYPERION / AGENTS · coordinator view"),
       this.theme.fg("muted", activity + idle),

@@ -309,8 +309,6 @@ async function main() {
       plan = revise(current!, read(arg("input")!) as Plan, revision!);
       changed = true;
     }
-    if (changed && current) {
-    }
     if (dryRun) {
       console.log(
         JSON.stringify(

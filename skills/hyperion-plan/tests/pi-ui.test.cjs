@@ -317,6 +317,63 @@ test('planned executor icons precede stable step IDs and preserve labels, width 
   }
 });
 
+test('plan overlay strips terminal controls before styling without changing canonical text', async t => {
+  const [{ PlanScreen, PlanScreenState }, tui] = await loadUI();
+  const dir = scratch(t);
+  const payloads = [
+    '\x1b]52;c;cHJvb2Y=\x07', '\x1b]52;c;cHJvb2Y=\x1b\\',
+    '\x1b]8;;https://untrusted.invalid\x07link\x1b]8;;\x07',
+    '\x1b[31mstyled\x1b[0m', '\x1b[2J\x1b[?25l',
+    '\x1bPdevice-control\x1b\\', '\x1b_PI_CURSOR\x1b\\',
+    '\x9d52;c;cHJvb2Y=\x9c', '\x9b2J',
+    '\x1b]52;c;unterminated', '\x1b[', '\x00\x07\r\x7f\x85',
+  ];
+  for (const [index, payload] of payloads.entries()) {
+    const file = path.join(dir, `plan-${index}.md`);
+    const decorate = label => `${label} 日本語 e\u0301 👩‍💻 ${payload}`;
+    const plan = core.initialize({ title: decorate('Plan'), steps: [
+      { id: 'base', title: decorate('Foundation'), short_title: decorate('Dependency'), status: 'completed' },
+      { id: 'review', kind: 'review', status: 'in_progress', title: decorate('Title'), short_title: decorate('Short'),
+        milestone: decorate('Milestone'), description: `${decorate('Description')}\nSecond paragraph\tindented`,
+        done_when: decorate('Acceptance'), checks: [decorate('Check')], progress_note: decorate('Result'),
+        blocked_by: decorate('Blocker'), scope_warning: decorate('Scope'), depends_on: ['base'], run_after: 'base',
+        complexity: 'moderate', complexity_reason: decorate('Complexity'), handover_after: decorate('Handover'),
+        review_state: 'needs_review', review_note: decorate('Freshness'),
+        comments: [{ id: 'note', state: 'pending', text: decorate('Note'), response: decorate('Response') }] },
+    ] });
+    core.saveMarkdown(file, plan);
+    const snapshot = await core.loadPlanSnapshot(file), canonical = fs.readFileSync(file, 'utf8');
+    const state = new PlanScreenState(snapshot, 'test', false);
+    state.setFocused('review'); state.setNotice(decorate('Notice'));
+    const original = JSON.stringify(state.plan), actions = [], rendered = [];
+    const theme = { fg: (_, text) => `\x1b[36m${text}\x1b[0m`, bg: (_, text) => `\x1b[44m${text}\x1b[0m`,
+      bold: text => `\x1b[1m${text}\x1b[0m` };
+    const screen = new PlanScreen(state, theme, () => {}, () => 60, action => actions.push(action));
+    for (const width of [42, 80, 120, 160]) {
+      for (let offset = 0; offset < 80; offset += 4) {
+        state.detailOffset = offset;
+        const lines = screen.render(width);
+        for (const line of lines) assert.ok(tui.visibleWidth(line) <= width);
+        assert.match(lines.join('\n'), /\x1b\[36m/, 'theme styling must remain intact');
+        const plain = lines.join('\n').replace(/\x1b\[(?:36|44|1|0)m/g, '');
+        assert.doesNotMatch(plain, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/, `unsafe payload ${JSON.stringify(payload)}`);
+        rendered.push(plain);
+      }
+    }
+    const output = rendered.join('\n');
+    for (const label of ['Plan', 'Title', 'Short', 'Description', 'Acceptance', 'Check', 'Result', 'Blocker',
+      'Scope', 'Dependency', 'Complexity', 'Handover', 'Freshness', 'Note', 'Response', 'Notice'])
+      assert.ok(output.includes(label), `missing field ${label}`);
+    assert.match(output, /日本語 e\u0301 👩‍💻/);
+    // An unterminated control string consumes the rest of that input, but must
+    // never consume trusted styling or a later separately rendered field.
+    if (payload !== '\x1b]52;c;unterminated') assert.match(output, /Second paragraph/);
+    assert.equal(fs.readFileSync(file, 'utf8'), canonical);
+    assert.equal(JSON.stringify(state.plan), original);
+    assert.deepEqual(actions, []);
+  }
+});
+
 // Mouse, resize, Unicode and focus contracts
 {
 async function fixture() {
@@ -423,6 +480,33 @@ test('pasted command letters and focus sequences do not invoke actions', async (
 const agentRecord = (id, fields = {}) => ({ id, state: 'running', native_id: `native-${id}`,
   transcript_path: `/tmp/${id}.jsonl`, context_digest: 'digest', settled: false, ...fields });
 const assistant = text => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' });
+
+test('tool receipts and agent output use the same terminal-safe text boundary', async () => {
+  const [{ planToolPresentation, AgentActivityState }] = await loadUI();
+  const theme = { fg: (_, text) => text, bg: (_, text) => text, bold: text => text };
+  const payload = '\x1b]52;c;cHJvb2Y=\x07\x1bPdevice-control\x1b\\\x9d52;c;cHJvb2Y=\x9c\x1b[2J';
+  const text = `Visible 日本語 👩‍💻 ${payload}\nSecond line\tindented`;
+  const result = { content: [{ type: 'text', text }], details: { action: 'show', revision: 1, summary: { title: text } } };
+  const context = { expanded: true, isPartial: false };
+  const components = [
+    planToolPresentation.renderCall({ action: 'show', path: text }, theme, context),
+    planToolPresentation.renderResult(result, { expanded: true }, theme, context),
+    planToolPresentation.renderResult(result, { expanded: false }, theme, context),
+    planToolPresentation.renderResult(result, { expanded: false }, theme, { ...context, isError: true }),
+  ];
+  for (const component of components) {
+    const output = component.render(160).join('\n');
+    assert.doesNotMatch(output, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+    assert.doesNotMatch(output, /cHJvb2Y|device-control/);
+    assert.match(output, /Visible 日本語 👩‍💻/);
+  }
+  const state = new AgentActivityState(); state.record(agentRecord('safe'), true);
+  state.event('safe', { type: 'message_update', message: assistant(text) });
+  state.event('safe', { type: 'message_end', message: assistant(text) });
+  const activity = state.agents.get('safe');
+  assert.doesNotMatch(activity.log + activity.streaming, /[\x00-\x09\x0b-\x1f\x7f-\x9f]|cHJvb2Y|device-control/);
+  assert.match(activity.log, /Visible 日本語 👩‍💻 \nSecond line {4}indented/);
+});
 
 test('agent monitor distinguishes live observation from restored unknown state and bounds logs', async () => {
   const [{ AgentActivityState }] = await loadUI();

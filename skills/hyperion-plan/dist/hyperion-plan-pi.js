@@ -3764,6 +3764,7 @@ import {
 } from "@earendil-works/pi-tui";
 var errorMessage2 = (error) => error instanceof Error ? error.message : String(error);
 var errorCode = (error) => error && typeof error === "object" && "code" in error ? String(error.code) : void 0;
+var terminalText = (text) => text.replace(/(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c|$)/g, "").replace(/(?:\x1b[P_X^]|[\x90\x98\x9e\x9f])[\s\S]*?(?:\x1b\\|\x9c|$)/g, "").replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "").replace(/\x1b[ -/]*[@-Z\\-_]/g, "").replace(/\t/g, "    ").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
 var PlanScreenState = class {
   constructor(snapshot, actorId, readOnly, onDraftChange) {
     this.onDraftChange = onDraftChange;
@@ -4081,7 +4082,7 @@ var PlanScreen = class {
       else if (step.review_state === "needs_review") tags.push("changed \xB7 review advisory");
       if (step.depends_on?.length) tags.push(`needs ${step.depends_on.join(",")}`);
       if (step.run_after) tags.push(`run after ${step.run_after}`);
-      entries.push({ text: muted(`      ${tags.join(" \xB7 ")}`), stepId: step.id });
+      entries.push({ text: muted(`      ${this.singleLine(tags.join(" \xB7 "))}`), stepId: step.id });
     }
     const focusLine = entries.findIndex((entry) => entry.stepId === state.focusedStepId && entry.checkbox);
     if (focusLine < state.listOffset) state.listOffset = Math.max(0, focusLine - 1);
@@ -4136,17 +4137,17 @@ var PlanScreen = class {
     ];
   }
   singleLine(value) {
-    return value.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+    return terminalText(value).replace(/\s+/g, " ").trim();
   }
   displayNotice(state) {
-    return state.dirty ? `Draft preserved: ${state.notice}` : state.notice;
+    return terminalText(state.dirty ? `Draft preserved: ${state.notice}` : state.notice);
   }
   detailLines(plan, step) {
     const theme = this.theme;
-    const wrap = (value) => wrapTextWithAnsi(value, Math.max(1, this.detailWidth));
+    const wrap = (value) => wrapTextWithAnsi(terminalText(value), Math.max(1, this.detailWidth));
     if (!step) return [theme.fg("accent", "EMPTY PLAN"), "", ...wrap("No steps yet. Ask Pi in chat to add the first step."), "", theme.fg("muted", "Creating or editing a plan never authorizes implementation.")];
     const byId = new Map(plan.steps.map((item) => [item.id, item]));
-    const lines = [theme.fg("accent", `STEP ${step.id} / ${(step.kind ?? "implementation").toUpperCase()}`), ...wrap(theme.bold(step.title)), ""];
+    const lines = [theme.fg("accent", `STEP ${step.id} / ${(step.kind ?? "implementation").toUpperCase()}`), ...wrap(step.title).map((line) => theme.bold(line)), ""];
     if (step.description) lines.push(theme.fg("muted", "DESCRIPTION"), ...wrap(step.description), "");
     if (step.done_when) lines.push(theme.fg("muted", "ACCEPTANCE CRITERIA"), ...wrap(step.done_when), "");
     if (step.checks?.length) {
@@ -4159,7 +4160,7 @@ var PlanScreen = class {
     if (step.progress_note) lines.push(...wrap(`Recorded result: ${step.progress_note}`));
     if (step.blocked_by) lines.push(theme.fg("error", "Blocked by"), ...wrap(step.blocked_by));
     if (step.needs_replanning) lines.push(theme.fg("warning", "Needs replanning before resuming updated scope."));
-    else if (step.review_state === "needs_review") lines.push(theme.fg("warning", `Changed since last review: ${step.review_note || "Inspect changed assumptions during Run."} This warning is advisory.`));
+    else if (step.review_state === "needs_review") lines.push(theme.fg("warning", `Changed since last review: ${this.singleLine(step.review_note || "Inspect changed assumptions during Run.")} This warning is advisory.`));
     if (step.scope_warning) lines.push(theme.fg("warning", "Scope warning"), ...wrap(step.scope_warning));
     const deps = prerequisites(step);
     lines.push(...wrap(`Prerequisites: ${deps.length ? deps.map((id) => `${id} (${byId.get(id)?.short_title || byId.get(id)?.title || id})`).join(", ") : "none"}`));
@@ -4203,7 +4204,7 @@ Specify a plan path explicitly; no fallback was chosen.`, "error");
   if (discovery.truncated) ctx.ui.notify("Plan discovery is incomplete. Choose a plan explicitly.", "warning");
   const candidates = discovery.candidates.filter((candidate2) => candidate2.lifecycle !== "finished");
   if (candidates.length) {
-    const clean2 = (text) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+    const clean2 = (text) => terminalText(text).replace(/\n/g, " ");
     const options = candidates.map((candidate2, index) => `${index + 1}. ${clean2(path7.relative(ctx.cwd, candidate2.path))} \u2014 ${clean2(candidate2.title)}`);
     const other = "Enter another plan path\u2026";
     const choice = await ctx.ui.select("Choose Hyperion plan", [...options, other]);
@@ -4386,16 +4387,16 @@ var planToolPresentation = {
     if (context && !context.isPartial && !context.expanded) return { render: () => [], invalidate() {
     } };
     const args = record(value) ? value : {};
-    const clean2 = (text) => logText(text).replace(/\n/g, " ");
+    const clean2 = (text) => terminalText(text).replace(/\n/g, " ");
     return new Text(theme.fg("muted", `Hyperion \xB7 ${clean2(args.action ?? "\u2026")}${context?.expanded && args.path ? ` \xB7 ${clean2(args.path)}` : ""}`), 0, 0);
   },
   renderResult(result, options, theme, context) {
-    const text = logText(result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"));
+    const text = terminalText(result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"));
     if (options.expanded) return new Text(text, 0, 0);
     if (context?.isError || !record(result.details)) return new Text(theme.fg("error", text), 0, 0);
     if (options.isPartial) return new Text(theme.fg("muted", "Updating plan\u2026"), 0, 0);
     const data = result.details;
-    const clean2 = (text2) => logText(text2).replace(/\n/g, " ");
+    const clean2 = (text2) => terminalText(text2).replace(/\n/g, " ");
     const prefix = theme.fg("dim", `Hyperion \xB7 ${typeof data.action === "string" ? clean2(data.action) : "plan"}`);
     if (typeof data.revision !== "number") {
       const count = Array.isArray(data.candidates) ? data.candidates.length : 0;
@@ -4409,7 +4410,6 @@ var planToolPresentation = {
   }
 };
 var LOG_LIMIT = 64 * 1024;
-var logText = (text) => text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\t/g, "    ").replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
 var messageText = (message) => Array.isArray(message.content) ? message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n") : "";
 var AgentActivityState = class {
   agents = /* @__PURE__ */ new Map();
@@ -4443,7 +4443,7 @@ var AgentActivityState = class {
   }
   append(id, text) {
     const a = this.agents.get(id);
-    const next = a.log + (a.log && text ? "\n" : "") + logText(text);
+    const next = a.log + (a.log && text ? "\n" : "") + terminalText(text);
     a.clipped ||= next.length > LOG_LIMIT;
     a.log = next.slice(-LOG_LIMIT);
   }
@@ -4456,7 +4456,7 @@ var AgentActivityState = class {
       this.append(id, `\u25B6 ${a.activity}`);
     } else if (event.type === "message_update" && event.message.role === "assistant") {
       a.activity = "Generating response";
-      const text = logText(messageText(event.message));
+      const text = terminalText(messageText(event.message));
       a.clipped ||= text.length > LOG_LIMIT;
       a.streaming = text.slice(-LOG_LIMIT);
     } else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -4517,7 +4517,7 @@ ${text}`);
         } else if (m.role === "toolResult") this.append(id, `${m.isError ? "\u2717" : "\u2713"} ${m.toolName}
 ${messageText(m)}`);
       }
-      if (a.record.report && !a.log.endsWith(logText(a.record.report).slice(-LOG_LIMIT)))
+      if (a.record.report && !a.log.endsWith(terminalText(a.record.report).slice(-LOG_LIMIT)))
         this.append(id, `Recorded report
 ${a.record.report}`);
     } catch (error) {
@@ -4625,7 +4625,7 @@ var AgentScreen = class {
       this.listKey = key;
       this.list = new SelectList(agents.map((a2) => ({
         value: a2.record.id,
-        label: `${status(a2)} \xB7 ${logText(a2.record.title ?? a2.record.id).replace(/\n/g, " ")}`
+        label: `${status(a2)} \xB7 ${terminalText(a2.record.title ?? a2.record.id).replace(/\n/g, " ")}`
       })), this.bodyRows, {
         selectedPrefix: (text2) => this.theme.fg("accent", text2),
         selectedText: (text2) => this.theme.fg("accent", text2),
@@ -4645,14 +4645,14 @@ ${a.streaming}` : ""}` || "Waiting for the first activity event\u2026" : "No Hyp
     const logKey = `${rightWidth}\0${text}`;
     if (this.logKey !== logKey) {
       this.logKey = logKey;
-      this.wrapped = text.split("\n").flatMap((line) => wrapTextWithAnsi(logText(line), rightWidth));
+      this.wrapped = text.split("\n").flatMap((line) => wrapTextWithAnsi(terminalText(line), rightWidth));
     }
     this.logs.updateLayout(this.wrapped.length, this.bodyRows, this.refresh);
     const right = this.logs.render(rightWidth).slice(this.logs.scrollTop, this.logs.scrollTop + this.bodyRows);
     const left = agents.length ? this.list.render(wide ? leftWidth : w) : [this.theme.fg("muted", "No assignments")];
     const rows = Array.from({ length: this.bodyRows }, (_, i) => wide ? fit(left[i] ?? "", leftWidth) + this.theme.fg("border", " \u2502 ") + fit(right[i] ?? "", rightWidth) : fit((this.focus === "agents" ? left : right)[i] ?? ""));
     const elapsed = a?.record.started_at ? `${Math.max(0, Math.floor(((a.live ? Date.now() : a.record.updated_at ?? Date.now()) - a.record.started_at) / 1e3))}s` : "";
-    const activity = a ? `${status(a)}${elapsed ? ` \xB7 ${elapsed}` : ""} \xB7 ${logText(a.activity).replace(/\n/g, " ")}` : "No assignments yet";
+    const activity = a ? `${status(a)}${elapsed ? ` \xB7 ${elapsed}` : ""} \xB7 ${terminalText(a.activity).replace(/\n/g, " ")}` : "No assignments yet";
     const idle = a?.live && a.lastEventAt ? ` \xB7 last event ${Math.floor((Date.now() - a.lastEventAt) / 1e3)}s ago` : "";
     const contents = [
       this.theme.fg("accent", "HYPERION / AGENTS \xB7 coordinator view"),
