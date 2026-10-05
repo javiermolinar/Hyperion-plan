@@ -159,7 +159,9 @@ async function main() {
         let dirty: boolean;
         [current, dirty, sourceDigest] = loadMarkdown(p);
         refreshRequired = dirty;
-        if (writesPlan) assertExecutionOwner(current, actor);
+        // Non-read-only inspection/exports can refresh bookkeeping or save recovery.
+        // Fence those writes too, before touching any owned Markdown artifacts.
+        if (writesPlan || !readOnly) assertExecutionOwner(current, actor);
         if (readOnly) {
           const stateAfter = fs.existsSync(markdownStatePath(p))
             ? readText(markdownStatePath(p))

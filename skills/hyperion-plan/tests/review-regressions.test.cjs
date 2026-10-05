@@ -117,6 +117,38 @@ for (const status of ['in_progress', 'completed']) {
   });
 }
 
+for (const status of ['in_progress', 'completed']) {
+  test(`update_step protects original ${status} review scope across status-reset batches`, () => {
+    const plan = reviewPlan(status), original = api.clone(plan);
+    for (const fields of [{ depends_on: ['b'] }, { checks: ['Check B'] }, { run_after: 'b' }]) {
+      const operations = [
+        { type: 'set_status', step_id: 'r', status: 'pending' },
+        { type: 'update_step', step_id: 'r', fields },
+        { type: 'set_status', step_id: 'r', status: 'completed' },
+      ];
+      assert.throws(() => api.applyRequest(plan, request(plan, 'edit', operations)), /Preserve the scope and timing/);
+      assert.deepEqual(plan, original);
+    }
+    const [unchangedScope] = api.applyRequest(plan, request(plan, 'edit', [
+      { type: 'set_status', step_id: 'r', status: 'pending' },
+      { type: 'update_step', step_id: 'r', fields: { checks: ['Check A'], title: 'Clearer title' } },
+    ]));
+    assert.deepEqual(unchangedScope.steps[2].checks, ['Check A']);
+    assert.equal(unchangedScope.steps[2].title, 'Clearer title');
+  });
+}
+
+test('update_step permits pending and newly added review scope changes', () => {
+  const plan = reviewPlan('pending');
+  const [updated] = api.applyRequest(plan, request(plan, 'edit', [
+    { type: 'update_step', step_id: 'r', fields: { depends_on: ['b'], checks: ['Check B'], run_after: 'b' } },
+    { type: 'add_step', step_id: 'r2', title: 'Another review', kind: 'review', depends_on: ['a'], checks: ['Check A'] },
+    { type: 'update_step', step_id: 'r2', fields: { checks: ['Check A carefully'] } },
+  ]));
+  assert.deepEqual(updated.steps[2].depends_on, ['b']);
+  assert.deepEqual(updated.steps[3].checks, ['Check A carefully']);
+});
+
 test('a pending review can still change scope and requires fresh approval', () => {
   let plan = reviewPlan('pending');
   [plan] = api.applyRequest(plan, request(plan, 'implement', [], { selected_step_ids: ['r'] }));
@@ -155,6 +187,23 @@ for (const extension of ['md', 'json']) {
     }
   });
 
+  test(`apply update_step rejects inverted order and rewritten review history without writes (${extension})`, t => {
+    const plan = reviewPlan('completed'), { dir, p } = scratch(t, plan, extension);
+    const file = path.join(dir, 'request.json'), before = snapshot(p);
+    for (const operations of [
+      [{ type: 'update_step', step_id: 'a', fields: { depends_on: ['b'] } }],
+      [{ type: 'set_status', step_id: 'r', status: 'pending' },
+        { type: 'update_step', step_id: 'r', fields: { depends_on: ['b'] } },
+        { type: 'set_status', step_id: 'r', status: 'completed' }],
+    ]) {
+      api.atomicWrite(file, request(plan, 'edit', operations));
+      const result = run('apply', '--plan', p, '--request', file);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Keep “a” after “b”|Preserve the scope and timing/);
+      assert.deepEqual(snapshot(p), before);
+    }
+  });
+
   test(`dependency updates reject inverted order and retain usable card edits (${extension})`, t => {
     const plan = api.initialize({ title: 'Order', steps: [step('a'), step('b')] });
     const { dir, p } = scratch(t, plan, extension), file = path.join(dir, 'patch.json');
@@ -166,6 +215,13 @@ for (const extension of ['md', 'json']) {
       assert.match(result.stderr, /Keep “a” after “b”/);
       assert.deepEqual(snapshot(p), before);
     }
+    const patch = { type: 'update_step', step_id: 'a', fields: { depends_on: ['b'] } };
+    assert.throws(() => api.applyRequest(plan, request(plan, 'edit', [patch])), /Keep “a” after “b”/);
+    const [reordered] = api.applyRequest(plan, request(plan, 'edit', [
+      patch, { type: 'reorder_steps', step_ids: ['b', 'a'] },
+    ]));
+    assert.deepEqual(reordered.steps.map(s => s.id), ['b', 'a']);
+    assert.deepEqual(reordered.steps[1].depends_on, ['b']);
     const replacement = api.clone(plan);
     replacement.steps[0].depends_on = ['b'];
     assert.throws(() => api.revise(plan, replacement, 1), /Keep “a” after “b”/);

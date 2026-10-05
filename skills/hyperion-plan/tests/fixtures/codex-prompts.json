@@ -1,0 +1,133 @@
+{
+  "config": {
+    "skill_path": "/skills/hyperion-plan/SKILL.md",
+    "plan_path": "/workspace/plan.md"
+  },
+  "fixtures": [
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-ask",
+        "intent": "ask",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ],
+        "question": "What remains?"
+      },
+      "sha256": "fa136a01cbb8f4ba2b33a0271287362dc9875eeb863a22c29f84f362314606cc"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-handover",
+        "intent": "handover",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ]
+      },
+      "sha256": "e058a966640caed7ab6780272729d227265125e0e8c15602b4461aa27ee63c00"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-review",
+        "intent": "review",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ]
+      },
+      "sha256": "19f8104e2fc4ebacdd7b6386b12f5b8328d019cee7721caac212976463f00106"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-finish",
+        "intent": "finish",
+        "operations": []
+      },
+      "sha256": "98756b03f4e0ab16adc71d3b5c04b50b09ff9544f87738d55f32ed9f2016884a"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-reopen",
+        "intent": "reopen",
+        "operations": []
+      },
+      "sha256": "16b644601ace7c01aab5d88ed33ef6b87213f77173f9e029db5bd1d53b8a5441"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-implement",
+        "intent": "implement",
+        "operations": [],
+        "selected_step_ids": [
+          "a"
+        ],
+        "execution_mode": "auto"
+      },
+      "sha256": "e91f3db0d46719b0b5d50ada4240212f727cf9af913b867141bd28861e90dafa"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-decompose",
+        "intent": "decompose",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ]
+      },
+      "sha256": "c2b680bef5947fd6389d8143d109adc574eacb6069adbc4878583939aa0f1659"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-replan",
+        "intent": "replan",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ]
+      },
+      "sha256": "02daa46a5ba3db9eda361dcf995c0ff6ad52745e75fcd711de4bf185a9c677e1"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "request-edit",
+        "intent": "edit",
+        "operations": []
+      },
+      "sha256": "face278baa63288bda2580f11912ceaf1dfe7a7fe275a8bb40f63161c1543a5b"
+    },
+    {
+      "request": {
+        "plan_id": "contract-plan",
+        "base_revision": 4,
+        "request_id": "independent-review",
+        "intent": "review",
+        "operations": [],
+        "target_step_ids": [
+          "a"
+        ],
+        "review_mode": "independent",
+        "review_focus": "Scope"
+      },
+      "sha256": "4b7a23ad83adbb9e305c6794a0f4ad9c8d1ce8ef726dbdff5318e39e7664c8d1"
+    }
+  ]
+}

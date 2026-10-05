@@ -1,6 +1,6 @@
 # Independent review checks
 
-Use a selectable step with `kind: "review"` to review a coherent implementation batch. Its `depends_on` identifies the implementation steps under review; `checks` contains 1–12 task-specific check strings, and `done_when` records observable completion criteria. The helper requires covered work to appear before the review. The expand control exposes checks, placement, and scope; the normal selection controls choose when to run it. The distinct appearance and **Run review** button are driven by its kind, not its title.
+Use a selectable step with `kind: "review"` to review a coherent implementation batch. Its `depends_on` identifies the implementation steps under review; `checks` contains 1–12 task-specific check strings, and `done_when` records observable completion criteria. The helper requires covered work to appear before the review. The expand control exposes checks, placement, and scope; the normal selection controls choose when to run it. Native Pi sends a current Run intent even when bookkeeping needs reconciliation, without a second confirmation. The coordinator preserves actual readiness and completion checks. The distinct appearance and **Run review** button are driven by its kind, not its title.
 
 Example step, assuming `session-handoff` is an existing implementation step:
 
@@ -28,7 +28,7 @@ Honor user timing and scope: `run_after` identifies when the review can run; `de
 
 ## Prepare the review
 
-After the prerequisites finish, check that the review step still describes the actual scope. If dependency completion marked the step `needs_review`, use the normal freshness-review command to record that scope check. Clearing this warning makes the review step selectable; it does not mean the implementation passed independent review.
+After the prerequisites finish, check that the review step still describes the actual scope. If dependency completion marked the step `needs_review`, inspect the changed assumptions and use the normal freshness-review command to record that scope check. Freshness is advisory, not a selection blocker or another approval gate. Clearing the warning does not mean the implementation passed independent review.
 
 When the review step is selected, checkpoint its start and prepare a brief containing:
 
@@ -44,7 +44,9 @@ Give the reviewer the requirements and evidence, without the implementer's conve
 
 ## Use a fresh task
 
-A submitted, selected `kind: "review"` step shown as “Review · fresh task” requests a separate task. For older untyped plans, use the explicit title and description requesting a fresh task. Use `create_thread` to start it with the prepared brief; do not fork the implementation conversation. This is a fresh task/context, not a promise to open a separate operating-system window.
+**Pi:** after the selected review's start checkpoint, use an available, explicitly authorized host/external reviewer in fresh context. Supply requirements and identified code without the implementation conversation. Record the actual reviewer identity, reviewed revision, report path, checks and limitations. The coordinator inspects evidence before a shared completion checkpoint; Hyperion no longer certifies artifacts or provisions tests. Missing required checks remain unverified; findings do not authorize fixes. Inspect the same task on retry, and leave unavailable independent review incomplete. Reconcile old active/uncertain runtime records using the old version/owning host before upgrading. Do not apply the Codex task-creation commands below in Pi.
+
+**Codex:** a submitted, selected `kind: "review"` step shown as “Review · fresh task” requests a separate task. For older untyped plans, use the explicit title and description requesting a fresh task. Use `create_thread` to start it with the prepared brief; do not fork the implementation conversation. This is a fresh task/context, not a promise to open a separate operating-system window.
 
 Follow the task tool's project and starting-state rules. Call `list_projects` before choosing a project. Ensure the reviewer gets the captured changes, including uncommitted work; the default branch alone is insufficient. A projectless task that reads the captured snapshot is suitable for reviewing local skills or other files outside a saved Git project. Do not silently point a new worktree at a different code revision.
 
@@ -60,6 +62,8 @@ Suggested reviewer instruction:
 
 Read the report and compare its snapshot identifier with the current implementation before recording an outcome. If the code changed, scope the difference and request a fresh check of the affected parts; an old clean report does not cover new code.
 
-Use the review step's `progress_note` to record the report path, reviewer task ID, snapshot, and concise outcome. Complete it only when its acceptance criteria are met. Unresolved blocking findings or a required check that could not run keep it incomplete with a concrete `blocked_by` reason. Distinguish “review performed” from “checks passed.” Preserve completed implementation history instead of resetting the whole plan.
+Use the review step's `progress_note` to record the report path, reviewer task ID, snapshot, and concise outcome. Complete it only when its acceptance criteria are met. Unresolved blocking findings, stale reports, or required checks that could not run keep it incomplete; record those acceptance limitations in `progress_note` or `review_note`. Distinguish “review performed” from “checks passed.” Preserve completed implementation history instead of resetting the whole plan.
+
+`blocked_by` prevents execution admission, not just completion. Native Pi accepts selection and Run intent anyway, letting the coordinator reconcile the obstacle; older cards may disable selection. Reserve it for an obstacle to running the review itself, such as unresolved writers or an unavailable reviewer. Never set it merely because the review awaits selection, post-fix verification, fresh evidence, or optional test setup. Those are reasons to run a review, not reasons to disable Run. After authorized fixes, reconcile and clear resolved execution blockers while retaining the outstanding acceptance limitations in notes; keep the existing review selectable and incomplete. A new explicit Run requests the post-fix review without another setup/permission round trip. Same-request retries inspect the existing assignment; active or uncertain assignments still prohibit duplicate dispatch, and completion still requires current verified evidence.
 
 Review selection alone does not authorize fixes. Apply fixes when they are already within the user's active implementation authorization; otherwise propose concrete follow-up steps for selection. Recheck affected findings after fixes and clear blockers only with evidence. Do not mark a finding resolved merely because it was discussed, or treat absence of findings as proof of complete correctness.

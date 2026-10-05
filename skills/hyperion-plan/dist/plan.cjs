@@ -1654,6 +1654,24 @@ function parseJSON(text) {
 
 // src/model.ts
 var REASONING_EFFORTS = ["inherit", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+var STEP_EDITABLE_FIELDS = /* @__PURE__ */ new Set([
+  "title",
+  "short_title",
+  "milestone",
+  "handover_after",
+  "description",
+  "done_when",
+  "depends_on",
+  "checks",
+  "run_after",
+  "reasoning_effort",
+  "parallel_group",
+  "complexity",
+  "complexity_reason",
+  "estimated_files",
+  "estimate_note",
+  "scope_warning"
+]);
 var STATUSES = ["pending", "in_progress", "completed"];
 var EXECUTION_STATES = ["approved", "paused", "cancelled"];
 function requireValue(condition, message) {
@@ -2195,7 +2213,26 @@ function applyOperations(plan, operations) {
       continue;
     }
     requireValue(step, `Unknown step: ${sid}`);
-    if (op.type === "move_review" || op.type === "update_review") {
+    if (op.type === "update_step") {
+      requireValue(record(op.fields), "Expected a step update object");
+      const keys = Object.keys(op.fields);
+      requireValue(keys.length > 0, "Supply at least one step field");
+      for (const key of keys)
+        requireValue(STEP_EDITABLE_FIELDS.has(key), `Unsupported step field: ${key}`);
+      const protectedReview = Object.hasOwn(original, sid) && original[sid].kind === "review" && original[sid].status !== "pending" ? original[sid] : step.kind === "review" && step.status !== "pending" ? step : void 0;
+      if (protectedReview) {
+        for (const field of ["depends_on", "checks", "run_after"])
+          if (Object.hasOwn(op.fields, field))
+            requireValue(
+              equal(protectedReview[field] ?? null, op.fields[field] ?? null),
+              "Preserve the scope and timing of active or completed reviews"
+            );
+      }
+      for (const [field, value] of Object.entries(clone(op.fields))) {
+        if (value === null) delete step[field];
+        else step[field] = value;
+      }
+    } else if (op.type === "move_review" || op.type === "update_review") {
       requireValue(step.kind === "review", "Expected a review step");
       requireValue(
         step.status === "pending" && (!Object.hasOwn(original, sid) || original[sid].status === "pending"),
@@ -2278,6 +2315,7 @@ function applyOperations(plan, operations) {
       "reorder_steps",
       "move_review",
       "update_review",
+      "update_step",
       "add_step",
       "remove_step"
     ].includes(op.type)
@@ -2417,15 +2455,31 @@ function applyRequest(plan, value) {
   const result = applyOperations(plan, operations), available = Object.fromEntries(result.steps.map((s) => [s.id, s]));
   for (const previous of plan.steps) {
     const step = Object.hasOwn(available, previous.id) ? available[previous.id] : void 0;
-    if (!step || equal(previous.comments ?? [], step.comments ?? [])) continue;
+    if (!step) continue;
+    const oldScope = stepFingerprint(previous).scope;
+    if (oldScope === stepFingerprint(step).scope) continue;
+    const commentsChanged = !equal(previous.comments ?? [], step.comments ?? []);
+    const commentsOnly = commentsChanged && stepFingerprint({ ...previous, comments: [] }).scope === stepFingerprint({ ...step, comments: [] }).scope;
     if (previous.status === "in_progress") step.needs_replanning = true;
     if (result.execution)
       result.execution.selected_step_ids = result.execution.selected_step_ids.filter((id) => id !== step.id);
-    invalidateDependents(
-      result,
-      [step.id],
-      "A prerequisite's notes changed. Review this step against the updated requirements."
-    );
+    if (commentsOnly) {
+      invalidateDependents(
+        result,
+        [step.id],
+        "A prerequisite's notes changed. Review this step against the updated requirements."
+      );
+    } else {
+      if (step.status !== "completed") {
+        step.review_state = "needs_review";
+        step.review_note = "This step changed. Review its scope and prerequisites.";
+      }
+      invalidateDependents(
+        result,
+        [step.id],
+        "A prerequisite changed. Review this step against the updated plan and code."
+      );
+    }
   }
   if (intent === "finish" || intent === "reopen") {
     result.lifecycle = intent === "finish" ? "finished" : "active";
@@ -2744,28 +2798,10 @@ function updatePlanReview(plan, revision2, value) {
 }
 
 // src/agent.ts
-var editableFields = /* @__PURE__ */ new Set([
-  "title",
-  "short_title",
-  "milestone",
-  "handover_after",
-  "description",
-  "done_when",
-  "depends_on",
-  "checks",
-  "run_after",
-  "reasoning_effort",
-  "parallel_group",
-  "complexity",
-  "complexity_reason",
-  "estimated_files",
-  "estimate_note",
-  "scope_warning"
-]);
 function fields(value, adding) {
   requireValue(record(value), "Expected a JSON object of step fields");
   for (const key of Object.keys(value))
-    requireValue(editableFields.has(key) || adding && key === "kind", `Unsupported step field: ${key}`);
+    requireValue(STEP_EDITABLE_FIELDS.has(key) || adding && key === "kind", `Unsupported step field: ${key}`);
   requireValue(Object.keys(value).length > 0, "Supply at least one step field");
   return clone(value);
 }
@@ -2816,7 +2852,9 @@ function editStep(plan, revision2, edit) {
     requireValue(step, `Unknown step: ${edit.stepId}`);
     if (edit.action === "update") {
       const patch = fields(edit.fields, false);
-      Object.assign(step, patch);
+      replacement = applyOperations(replacement, [
+        { type: "update_step", step_id: edit.stepId, fields: patch }
+      ]);
     } else if (edit.action === "move") {
       requireValue(step.status === "pending", "Only pending tasks can be reordered");
       place(replacement, edit.stepId, edit.placement, true);
@@ -4416,7 +4454,7 @@ async function main() {
         let dirty;
         [current2, dirty, sourceDigest] = loadMarkdown(p);
         refreshRequired = dirty;
-        if (writesPlan) assertExecutionOwner(current2, actor);
+        if (writesPlan || !readOnly) assertExecutionOwner(current2, actor);
         if (readOnly) {
           const stateAfter = fs2.existsSync(markdownStatePath(p)) ? readText(markdownStatePath(p)) : null;
           requireValue(stateAfter === stateBefore && digestText(readText(p)) === sourceDigest, "Plan changed while reading; retry against the latest snapshot");

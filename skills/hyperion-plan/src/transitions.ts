@@ -163,22 +163,40 @@ export function applyRequest(plan: Plan, value: unknown): [Plan, boolean] {
     require(!targets.length, "Unexpected planning targets");
   const result = applyOperations(plan, operations),
     available = Object.fromEntries(result.steps.map((s) => [s.id, s]));
-  // Compare final notes so cancelled draft edits preserve authority. An explicit
+  // Scope edits revoke only the changed step's prior approval. An explicit
   // implementation selection below may authorize the updated scope again.
   for (const previous of plan.steps) {
     const step = Object.hasOwn(available, previous.id)
       ? available[previous.id]
       : undefined;
-    if (!step || equal(previous.comments ?? [], step.comments ?? [])) continue;
+    if (!step) continue;
+    const oldScope = stepFingerprint(previous).scope;
+    if (oldScope === stepFingerprint(step).scope) continue;
+    const commentsChanged = !equal(previous.comments ?? [], step.comments ?? []);
+    const commentsOnly = commentsChanged &&
+      stepFingerprint({ ...previous, comments: [] }).scope ===
+        stepFingerprint({ ...step, comments: [] }).scope;
     if (previous.status === "in_progress") step.needs_replanning = true;
     if (result.execution)
       result.execution.selected_step_ids =
         result.execution.selected_step_ids.filter((id) => id !== step.id);
-    invalidateDependents(
-      result,
-      [step.id],
-      "A prerequisite's notes changed. Review this step against the updated requirements.",
-    );
+    if (commentsOnly) {
+      invalidateDependents(
+        result,
+        [step.id],
+        "A prerequisite's notes changed. Review this step against the updated requirements.",
+      );
+    } else {
+      if (step.status !== "completed") {
+        step.review_state = "needs_review";
+        step.review_note = "This step changed. Review its scope and prerequisites.";
+      }
+      invalidateDependents(
+        result,
+        [step.id],
+        "A prerequisite changed. Review this step against the updated plan and code.",
+      );
+    }
   }
   if (intent === "finish" || intent === "reopen") {
     result.lifecycle = intent === "finish" ? "finished" : "active";

@@ -2,7 +2,15 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const api = require("../dist/index.cjs");
 const fixture = require("./fixtures/python-baseline.json");
-for (const [index, c] of fixture.cases.entries())
+// Frozen storage traces repeat pure fingerprint calls. Run each exact input/output
+// pair once; retain all other cases and the original fixture indices for diagnosis.
+const fingerprints = new Set();
+for (const [index, c] of fixture.cases.entries()) {
+  if (c.fn === 'stepFingerprint') {
+    const key = JSON.stringify([c.args, c.error, c.result]);
+    if (fingerprints.has(key)) continue;
+    fingerprints.add(key);
+  }
   test(`Python compatibility ${index + 1}: ${c.test.split(".").at(-1)} / ${c.fn}`, () => {
     // Freshness is advisory now; retain the frozen fixture and assert the new contract.
     if (c.error?.startsWith("Step needs review:") && c.fn === "checkpoint") {
@@ -21,9 +29,21 @@ for (const [index, c] of fixture.cases.entries())
       assert.deepEqual(actual, expected);
       return;
     }
-    if (c.fn === "applyRequest" && c.test.endsWith(".test_agent_revision_preserves_receipts") && !c.error) {
+    if (c.fn === "applyRequest" && !c.error) {
       const expected = api.clone(c.result);
-      expected[0].steps.find(s => s.id === "inspect").needs_replanning = true;
+      const previous = c.args[0];
+      for (const oldStep of previous.steps) {
+        const nextStep = expected[0].steps.find(step => step.id === oldStep.id);
+        if (!nextStep || api.stepFingerprint(oldStep).scope === api.stepFingerprint(nextStep).scope) continue;
+        if (oldStep.status === "in_progress") nextStep.needs_replanning = true;
+        const commentsChanged = !api.equal(oldStep.comments ?? [], nextStep.comments ?? []);
+        const commentsOnly = commentsChanged && api.stepFingerprint({ ...oldStep, comments: [] }).scope ===
+          api.stepFingerprint({ ...nextStep, comments: [] }).scope;
+        if (!commentsOnly && nextStep.status !== "completed") {
+          nextStep.review_state = "needs_review";
+          nextStep.review_note = "This step changed. Review its scope and prerequisites.";
+        }
+      }
       assert.deepEqual(api[c.fn](...c.args), expected);
       return;
     }
@@ -61,3 +81,4 @@ for (const [index, c] of fixture.cases.entries())
     }
     assert.deepEqual(actual, c.result);
   });
+}

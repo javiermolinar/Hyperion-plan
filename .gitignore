@@ -1,0 +1,8 @@
+# Runtime dependencies for the root Pi package.
+/node_modules/
+
+# Local Pi installation settings (may contain credentials or personal paths).
+/.pi/settings.json
+
+# Disposable UI mock; the maintained Pi adapter lives in skills/hyperion-plan/.
+/prototypes/pi-plan-mock/

@@ -11,6 +11,7 @@ import {
   prerequisites,
   handoverBlocker,
   reorderPendingSteps,
+  STEP_EDITABLE_FIELDS,
   requireValue as require,
 } from "./model";
 import { revise, requireActive } from "./transitions";
@@ -34,28 +35,10 @@ export interface NoteEdit {
   noteId: string;
   text: string;
 }
-const editableFields = new Set([
-  "title",
-  "short_title",
-  "milestone",
-  "handover_after",
-  "description",
-  "done_when",
-  "depends_on",
-  "checks",
-  "run_after",
-  "reasoning_effort",
-  "parallel_group",
-  "complexity",
-  "complexity_reason",
-  "estimated_files",
-  "estimate_note",
-  "scope_warning",
-]);
 function fields(value: unknown, adding: boolean): Record<string, unknown> {
   require(record(value), "Expected a JSON object of step fields");
   for (const key of Object.keys(value))
-    require(editableFields.has(key) ||
+    require(STEP_EDITABLE_FIELDS.has(key) ||
       (adding && key === "kind"), `Unsupported step field: ${key}`);
   require(Object.keys(value).length > 0, "Supply at least one step field");
   return clone(value);
@@ -122,7 +105,9 @@ export function editStep(
     require(step, `Unknown step: ${edit.stepId}`);
     if (edit.action === "update") {
       const patch = fields(edit.fields, false);
-      Object.assign(step, patch);
+      replacement = applyOperations(replacement, [
+        { type: "update_step", step_id: edit.stepId, fields: patch },
+      ]);
     } else if (edit.action === "move") {
       require(step.status === "pending", "Only pending tasks can be reordered");
       place(replacement, edit.stepId, edit.placement, true);

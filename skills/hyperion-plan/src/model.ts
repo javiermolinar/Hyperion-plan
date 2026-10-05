@@ -95,6 +95,24 @@ export interface Plan {
   execution_owner?: string;
   [key: string]: unknown;
 }
+export const STEP_EDITABLE_FIELDS = new Set([
+  "title",
+  "short_title",
+  "milestone",
+  "handover_after",
+  "description",
+  "done_when",
+  "depends_on",
+  "checks",
+  "run_after",
+  "reasoning_effort",
+  "parallel_group",
+  "complexity",
+  "complexity_reason",
+  "estimated_files",
+  "estimate_note",
+  "scope_warning",
+]);
 export type Operation =
   | {
       type: "add_step";
@@ -110,6 +128,7 @@ export type Operation =
       run_after?: string;
       after_step_id?: string;
     }
+  | { type: "update_step"; step_id: string; fields: Record<string, unknown> }
   | { type: "set_reasoning_effort"; step_id: string; reasoning_effort: ReasoningEffort }
   | { type: "set_handover_point"; step_id: string; reason: string }
   | { type: "remove_step"; step_id: string }
@@ -739,7 +758,25 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
       continue;
     }
     requireValue(step, `Unknown step: ${sid}`);
-    if (op.type === "move_review" || op.type === "update_review") {
+    if (op.type === "update_step") {
+      requireValue(record(op.fields), "Expected a step update object");
+      const keys = Object.keys(op.fields);
+      requireValue(keys.length > 0, "Supply at least one step field");
+      for (const key of keys)
+        requireValue(STEP_EDITABLE_FIELDS.has(key), `Unsupported step field: ${key}`);
+      // A preceding set_status operation cannot erase the original review history.
+      const protectedReview = Object.hasOwn(original, sid) && original[sid].kind === "review" && original[sid].status !== "pending"
+        ? original[sid] : step.kind === "review" && step.status !== "pending" ? step : undefined;
+      if (protectedReview)
+        for (const field of ["depends_on", "checks", "run_after"])
+          if (Object.hasOwn(op.fields, field))
+            requireValue(equal(protectedReview[field as keyof Step] ?? null, op.fields[field] ?? null),
+              "Preserve the scope and timing of active or completed reviews");
+      for (const [field, value] of Object.entries(clone(op.fields))) {
+        if (value === null) delete step[field];
+        else step[field] = value;
+      }
+    } else if (op.type === "move_review" || op.type === "update_review") {
       requireValue(step.kind === "review", "Expected a review step");
       requireValue(
         step.status === "pending" &&
@@ -826,6 +863,7 @@ export function applyOperations(plan: Plan, operations: unknown): Plan {
         "reorder_steps",
         "move_review",
         "update_review",
+        "update_step",
         "add_step",
         "remove_step",
       ].includes(op.type),

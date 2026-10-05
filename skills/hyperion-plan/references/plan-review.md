@@ -2,6 +2,12 @@
 
 An explicit `intent: "review", review_mode: "independent"` request authorizes one fresh review task and reconciliation into the canonical plan. It does not authorize implementation. Ordinary `review` requests remain same-context freshness checks.
 
+## Pi execution
+
+Apply the user's explicit independent request through the shared core, then use an available, explicitly authorized host/external reviewer with fresh context. Record the request, actual reviewer identity, captured plan revision and report path. Ordinary Check plan freshness cannot launch a reviewer. Inspect an existing task before retrying; unknown settlement must not trigger replacement work.
+
+The dedicated Pi review/setup runtime has been removed. Hyperion neither provisions tests nor certifies snapshots, transcripts or artifacts. The coordinator inspects the external report, compares its scope with current code and requirements, and records the outcome through the shared `plan-review` command using the actual `--task-id`. Findings, including `needs_input`, remain preserved. Completion means review performed, not plan approved; it cannot grant or resume implementation. Missing reviewer capability leaves the review incomplete. Reconcile unresolved legacy activity using the old version/owning host before upgrading; preserve evidence and configuration files. The task-creation commands below are Codex-specific, not Pi APIs.
+
 ## Capture and dispatch
 
 1. Apply the exact request with `apply`. Read `show` and find the `plan_reviews` record by `request_id`. A retry returns the same record: inspect its existing task before dispatching anything. Never launch a second reviewer for that request. If a launch outcome is uncertain, recover the task ID from task history rather than blindly retrying.
@@ -17,7 +23,7 @@ Reviewer instruction:
 
 Read the report and compare its captured plan and code with the current state. If they changed, assess the differences explicitly; findings do not automatically cover new work. Preserve the original reviewed revision. Request another review only on explicit user instruction; do not start an automatic review loop.
 
-Apply straightforward, supported plan corrections through existing revision/step commands, preserving stable IDs, completed history, unrelated decisions, and reviewer records. Plan edits have their usual scope-invalidation rules; review never grants new implementation approval. Leave consequential unresolved choices for the user. Do not change completed implementation history to represent planned fixes.
+For Pi reviews, inspect and record the external report's scope, evidence and limitations. Then apply authorized plan corrections and update the preserved finding resolutions; do not claim the original report approves the revised requirements. A completed review remains snapshot history, not acceptance of later changes. Apply straightforward, supported plan corrections through existing revision/step commands, preserving stable IDs, completed history, unrelated decisions, and reviewer records. Plan edits have their usual scope-invalidation rules; review never grants new implementation approval. Leave consequential unresolved choices for the user. Do not change completed implementation history to represent planned fixes.
 
 For every finding record `applied`, `not_adopted` with a reason, or `needs_input` with the decision needed. Only mark applied after saving its plan change. Clear freshness warnings only after actual checks. Record `completed` when the report has been read and findings reconciled, even if some need input: completion means review performed, not plan approved. Record a note with coverage and limitations even when there are no findings.
 
