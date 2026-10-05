@@ -431,8 +431,29 @@ const model = { provider: 'hyperion-test', id: 'scripted', name: 'Scripted integ
   baseUrl: 'http://invalid.test', reasoning: false, input: ['text'],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 };
 
-test('real Pi runtime exposes the packaged tool to the provider before/after reload and session restore', { timeout: 30000 }, async t => {
-  const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } = await import(sdkURL);
+test('repository-root Pi manifest exposes the standalone skill and installs only its external runtime dependency', () => {
+  const repositoryRoot = path.resolve(root, '../..');
+  const manifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
+  const standalone = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(manifest.version, standalone.version);
+  assert.ok(manifest.keywords.includes('pi-package'));
+  for (const resource of ['extensions', 'skills']) {
+    assert.deepEqual(manifest.pi[resource].map(file => path.resolve(repositoryRoot, file)),
+      standalone.pi[resource].map(file => path.resolve(root, file)));
+    for (const file of manifest.pi[resource]) assert.ok(fs.existsSync(path.resolve(repositoryRoot, file)));
+  }
+  assert.deepEqual(manifest.dependencies, { 'proper-lockfile': standalone.dependencies['proper-lockfile'] });
+  assert.deepEqual(manifest.peerDependencies, standalone.peerDependencies);
+  assert.match(fs.readFileSync(path.join(repositoryRoot, '.npmrc'), 'utf8'), /^legacy-peer-deps=true$/m);
+  const lock = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8'));
+  assert.deepEqual(lock.packages[''].dependencies, manifest.dependencies);
+  assert.ok(!Object.keys(lock.packages).some(file => /node_modules\/(?:@earendil-works\/pi-|typebox)/.test(file)),
+    'Git installation must use host-provided Pi packages, not duplicate runtimes');
+});
+
+for (const [name, packageRoot] of [['standalone skill', root], ['repository root', path.resolve(root, '../..')]])
+test(`real Pi runtime exposes the ${name} package before/after reload and session restore`, { timeout: 30000 }, async t => {
+  const { createAgentSession, DefaultPackageManager, DefaultResourceLoader, SessionManager, SettingsManager } = await import(sdkURL);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hyperion-runtime-'));
   let passed = false;
   t.after(() => {
@@ -448,8 +469,12 @@ test('real Pi runtime exposes the packaged tool to the provider before/after rel
   core.saveMarkdown(path.join(dir, 'plan.md'), plan);
   // Exercise project package discovery, not just a direct import of the factory.
   fs.mkdirSync(path.join(dir, '.pi'));
-  fs.writeFileSync(path.join(dir, '.pi/settings.json'), JSON.stringify({ packages: [root] }));
+  fs.writeFileSync(path.join(dir, '.pi/settings.json'), JSON.stringify({ packages: [packageRoot] }));
   const settings = SettingsManager.create(dir, agentDir, { projectTrusted: true });
+  const resources = await new DefaultPackageManager({ cwd: dir, agentDir, settingsManager: settings }).resolve();
+  assert.deepEqual(resources.extensions.filter(file => file.enabled).map(file => file.path),
+    [path.join(root, 'dist/hyperion-plan-pi.js')]);
+  assert.ok(resources.skills.some(file => file.enabled && file.path === path.join(root, 'SKILL.md')));
   const loader = new DefaultResourceLoader({ cwd: dir, agentDir, settingsManager: settings,
     additionalExtensionPaths: [provider], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
   await loader.reload();
@@ -501,7 +526,7 @@ test('real Pi runtime exposes the packaged tool to the provider before/after rel
       fs.writeFileSync(path.join(dir, '.pi/settings.json'), JSON.stringify({ packages: [] }));
       await session.reload();
       assert.ok(!session.getActiveToolNames().includes('hyperion_plan'));
-      fs.writeFileSync(path.join(dir, '.pi/settings.json'), JSON.stringify({ packages: [root] }));
+      fs.writeFileSync(path.join(dir, '.pi/settings.json'), JSON.stringify({ packages: [packageRoot] }));
       await session.reload();
     }
     assert.deepEqual(session.getActiveToolNames().filter(name => name.startsWith('hyperion_')).sort(), ['hyperion_agent', 'hyperion_plan'], phase);

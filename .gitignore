@@ -1,3 +1,6 @@
+# Runtime dependencies for the root Pi package.
+/node_modules/
+
 # Local Pi installation settings (may contain credentials or personal paths).
 /.pi/settings.json
 
