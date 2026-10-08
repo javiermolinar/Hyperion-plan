@@ -2259,6 +2259,7 @@ async function mutatePlan(input, actorId, mutation, options = {}) {
         exportWarning = `Plan is saved; PR notes export needs retry: ${error.message}`;
       }
     }
+    options.afterWrite?.();
     return {
       path: planPath,
       plan,
@@ -2336,6 +2337,7 @@ import {
   SettingsManager
 } from "@earendil-works/pi-coding-agent";
 var AGENT_ENTRY = "hyperion.agent";
+var SETTLEMENT_ENTRY = "hyperion.agent-settlement";
 var check = (value, message) => {
   if (!value) throw new Error(message);
 };
@@ -2382,19 +2384,165 @@ function preflightAssignment(a) {
     if (!writes.has(file) && !fs3.existsSync(file)) reject("missing_read_path", "Assigned read file does not exist", file);
     if (fs3.existsSync(file)) fs3.accessSync(file, writes.has(file) ? fs3.constants.R_OK | fs3.constants.W_OK : fs3.constants.R_OK);
   }
-  return { cwd, sessionDir, writes, fileAllowed };
+  return { cwd, sessionDir, reads, writes, fileAllowed };
+}
+var absoluteClaim = (value) => typeof value === "string" && path4.isAbsolute(value) && path4.resolve(value) === value;
+function validCorrelation(value) {
+  return [value.coordinator_id, value.plan_id, value.request_id].every((v) => typeof v === "string" && v.trim()) && absoluteClaim(value.plan_path) && (value.step_id === void 0 || typeof value.step_id === "string" && !!value.step_id.trim()) && typeof value.scope_digest === "string" && /^[a-f0-9]{64}$/.test(value.scope_digest);
+}
+function validClaims(r) {
+  if (r.workspace === void 0 && r.read_paths === void 0 && r.write_paths === void 0) return true;
+  const paths = (values) => Array.isArray(values) && new Set(values).size === values.length && values.every((v) => absoluteClaim(v) && v !== r.workspace && inside(v, r.workspace));
+  return validCorrelation(r) && absoluteClaim(r.workspace) && paths(r.read_paths) && paths(r.write_paths) && r.write_paths.every((p) => r.read_paths.includes(p));
 }
 function latest(history) {
   const records = /* @__PURE__ */ new Map();
   for (const r of history) {
-    check(r && typeof r.id === "string" && typeof r.native_id === "string" && typeof r.transcript_path === "string" && ["rejected", "launching", "running", "succeeded", "failed", "cancelled", "unknown"].includes(r.state) && typeof r.settled === "boolean" && (r.state !== "rejected" || r.settled && r.native_id === "" && r.transcript_path === ""), "Malformed assignment history; inspect before reuse");
+    check(r && typeof r.id === "string" && typeof r.native_id === "string" && typeof r.transcript_path === "string" && ["rejected", "launching", "running", "succeeded", "failed", "cancelled", "unknown"].includes(r.state) && typeof r.settled === "boolean" && (r.state !== "rejected" || r.settled && r.native_id === "" && r.transcript_path === "") && validClaims(r), "Malformed assignment history; inspect before reuse");
     records.set(r.id, r);
   }
   return [...records.values()];
 }
-function inspectAssignment(history, id) {
+function intentDigest(r) {
+  return hash(JSON.stringify([
+    r.id,
+    r.native_id,
+    r.transcript_path,
+    r.context_digest,
+    r.coordinator_id,
+    r.plan_path,
+    r.plan_id,
+    r.request_id,
+    r.step_id ?? null,
+    r.scope_digest,
+    r.workspace,
+    r.read_paths,
+    r.write_paths
+  ]));
+}
+function nativeOutcome(r, expectedRoot) {
+  check(validCorrelation(r) && validClaims(r) && absoluteClaim(r.workspace) && Array.isArray(r.read_paths) && Array.isArray(r.write_paths) && /^[a-f0-9]{64}$/.test(r.context_digest) && !!r.native_id, "Missing native intent identity/claims");
+  check(absoluteClaim(expectedRoot) && canonical(expectedRoot) === expectedRoot && fs3.statSync(expectedRoot).isDirectory(), "Aliased native session root");
+  const file = r.transcript_path;
+  check(
+    absoluteClaim(file) && path4.dirname(file) === expectedRoot && path4.extname(file) === ".jsonl" && canonical(file) === file,
+    "Unexpected native session location"
+  );
+  const initial = fs3.lstatSync(file);
+  const bounded = (s) => s.isFile() && !s.isSymbolicLink() && s.nlink === 1 && s.size > 0 && s.size <= 8 * 1024 * 1024;
+  check(bounded(initial), "Native session must be regular, unaliased and bounded");
+  const fd = fs3.openSync(file, fs3.constants.O_RDONLY | fs3.constants.O_NOFOLLOW);
+  let text;
+  try {
+    const before = fs3.fstatSync(fd);
+    check(bounded(before) && before.ino === initial.ino && before.dev === initial.dev, "Native session changed while opening");
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs3.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      check(count > 0, "Truncated native session");
+      offset += count;
+    }
+    const after = fs3.fstatSync(fd), location = fs3.lstatSync(file);
+    check(
+      bounded(after) && after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs && bounded(location) && location.ino === before.ino && location.dev === before.dev && location.size === before.size && location.mtimeMs === before.mtimeMs && location.ctimeMs === before.ctimeMs && canonical(file) === file,
+      "Native session changed during inspection"
+    );
+    text = bytes.toString("utf8");
+    check(Buffer.from(text, "utf8").equals(bytes), "Invalid native session encoding");
+  } finally {
+    fs3.closeSync(fd);
+  }
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  check(lines.length > 1 && lines.length <= 5e4 && lines.every((line) => line.trim()), "Invalid/bounded native JSONL");
+  const entries = lines.map((line) => JSON.parse(line));
+  const header = entries.shift();
+  check(header?.type === "session" && header.version === 3 && header.id === r.native_id && header.cwd === r.workspace && canonical(r.workspace) === r.workspace && header.parentSession === void 0, "Native header identity/workspace mismatch");
+  const byId = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    check(entry && ["message", "thinking_level_change", "model_change", "compaction", "branch_summary", "custom", "custom_message", "label", "session_info", "usage", "context_edit"].includes(entry.type) && typeof entry.id === "string" && entry.id && !byId.has(entry.id) && (entry.parentId === null || typeof entry.parentId === "string" && byId.has(entry.parentId)), "Corrupt native entry ordering/type");
+    if (entry.type === "message") {
+      const m = entry.message;
+      check(m && ["system", "user", "assistant", "toolResult"].includes(m.role) && (Array.isArray(m.content) || ["system", "user"].includes(m.role) && typeof m.content === "string"), "Corrupt native message");
+      if (Array.isArray(m.content)) check(m.content.every((c) => c && typeof c.type === "string" && (c.type !== "text" || typeof c.text === "string")), "Corrupt native message content");
+    }
+    if (entry.type === "custom") check(typeof entry.customType === "string" && entry.customType.trim(), "Corrupt native custom entry");
+    byId.set(entry.id, entry);
+  }
+  const intents = entries.filter((e) => e.type === "custom" && e.customType === AGENT_ENTRY);
+  const markers = entries.filter((e) => e.type === "custom" && e.customType === SETTLEMENT_ENTRY);
+  check(intents.length === 1 && markers.length === 1, "Missing/ambiguous launching intent or settlement marker");
+  const intent = intents[0], markerEntry = markers[0], marker = markerEntry.data;
+  check(intent.data?.state === "launching" && intent.data.settled === false && validCorrelation(intent.data) && validClaims(intent.data) && intentDigest(intent.data) === intentDigest(r), "Launching intent correlation/context/claims mismatch");
+  check(marker?.version === 1 && marker.assignment_id === r.id && marker.native_id === r.native_id && marker.intent_digest === intentDigest(r) && marker.intent_entry_id === intent.id && ["succeeded", "failed", "cancelled"].includes(marker.state) && markerEntry === entries.at(-1), "Invalid settlement marker correlation/state/ordering");
+  const branch = [];
+  for (let entry = markerEntry; entry; entry = byId.get(entry.parentId)) branch.unshift(entry);
+  check(branch.includes(intent) && branch.indexOf(intent) < branch.length - 1, "Settlement is not descended from launching intent");
+  const messages = branch.slice(branch.indexOf(intent) + 1, -1).filter((e) => e.type === "message");
+  check(messages.every((e) => e.message && typeof e.message.role === "string"), "Corrupt native messages");
+  const report = [...messages].reverse().find((e) => e.message.role === "assistant");
+  check(marker.report_entry_id === (report?.id ?? null), "Settlement report ordering mismatch");
+  const failed = report?.message.stopReason !== "stop" || messages.some((e) => e.message.role === "toolResult" && e.message.isError);
+  check(marker.state === "cancelled" || marker.state === (failed ? "failed" : "succeeded"), "Settlement state contradicts native message/tool outcome");
+  check(!report || Array.isArray(report.message.content) && report.message.content.every((c) => c && typeof c.type === "string" && (c.type !== "text" || typeof c.text === "string")), "Corrupt native assistant report");
+  return { state: marker.state, report: report ? report.message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n") : void 0 };
+}
+function inspectAssignment(history, id, scope) {
   const r = latest(history).find((r2) => r2.id === id);
-  return r ? { ...r, ...!r.settled ? { state: "unknown", limitation: "No observed settlement. Inspect the existing native session; never relaunch this ID." } : {} } : void 0;
+  if (!r) return void 0;
+  const result = { ...structuredClone(r), ...!r.settled ? {
+    state: "unknown",
+    limitation: "No observed settlement. Inspect the existing native session; never relaunch this ID."
+  } : {} };
+  if (!scope) return result;
+  const unresolved = (reason) => ({
+    ...result,
+    state: "unknown",
+    settled: false,
+    report: void 0,
+    parent_state: r.state,
+    parent_settled: r.settled,
+    source: "unresolved",
+    limitation: reason
+  });
+  try {
+    check(r.coordinator_id === scope.coordinator_id && r.plan_path === scope.plan_path && r.plan_id === scope.plan_id && r.request_id === scope.request_id && canonical(scope.plan_path) === scope.plan_path, "Assignment is outside current plan/request/original coordinator");
+    if (r.state !== "rejected") {
+      check(r.workspace === scope.workspace && canonical(scope.workspace) === scope.workspace, "Assignment workspace mismatch");
+      check(!scope.scopeDigest || scope.scopeDigest(r) === r.scope_digest, "Current canonical assignment scope mismatch");
+    }
+    if (r.settled) {
+      check(["rejected", "succeeded", "failed", "cancelled"].includes(r.state), "Parent lifecycle does not record a terminal outcome");
+      return { ...result, parent_state: r.state, parent_settled: r.settled, source: "parent" };
+    }
+    const reservations = history.filter((e) => e.id === id && e.state === "launching" && !e.settled);
+    check(reservations.length === 1 && intentDigest(reservations[0]) === intentDigest(r), "Parent launching reservation is missing/ambiguous or changed");
+    const root = path4.join(scope.coordinator_session_dir, "hyperion-agents", hash(scope.coordinator_id));
+    const outcome = nativeOutcome(r, root);
+    return {
+      ...result,
+      ...outcome,
+      settled: true,
+      parent_state: r.state,
+      parent_settled: r.settled,
+      source: "child-session",
+      limitation: "Read-only child settlement evidence. Parent lifecycle is unchanged; unknown-writer fences remain. No reconciliation or continuation authorized."
+    };
+  } catch (error) {
+    return unresolved(`No verified child settlement: ${String(error)}`);
+  }
+}
+function inspectAssignments(history, scope) {
+  const assignments = latest(history).filter((r) => r.plan_path === scope.plan_path && r.plan_id === scope.plan_id && r.request_id === scope.request_id).map((r) => inspectAssignment(history, r.id, scope));
+  const outcomes = { settled: 0, failed: 0, rejected: 0, unresolved: 0 };
+  for (const r of assignments) {
+    if (!r.settled) outcomes.unresolved++;
+    else if (r.state === "rejected") outcomes.rejected++;
+    else if (r.state === "failed") outcomes.failed++;
+    else outcomes.settled++;
+  }
+  return { assignments, outcomes, read_only: true, coordinator_id: scope.coordinator_id, plan_path: scope.plan_path, request_id: scope.request_id };
 }
 function resources(context) {
   const runtime = createExtensionRuntime();
@@ -2415,46 +2563,218 @@ function resources(context) {
     }
   };
 }
+var sameCohort = (a, b) => a.coordinator_id === b.coordinator_id && a.plan_path === b.plan_path && a.plan_id === b.plan_id && a.request_id === b.request_id;
+var samePaths = (a, b) => a.length === b.length && a.every((p) => b.includes(p));
+function ownsRecord(live, r) {
+  const own = live.record;
+  return !!own && validCorrelation(r) && sameCohort(live.assignment.correlation, r) && r.step_id === own.step_id && r.scope_digest === own.scope_digest && r.id === own.id && r.native_id === own.native_id && r.transcript_path === own.transcript_path && r.context_digest === own.context_digest && r.workspace === live.scope.cwd && Array.isArray(r.read_paths) && Array.isArray(r.write_paths) && samePaths(r.read_paths, [...live.scope.reads]) && samePaths(r.write_paths, [...live.scope.writes]) && r.settled === own.settled && r.state === own.state;
+}
 var Subagents = class {
-  active;
+  capacity = 2;
+  active = /* @__PURE__ */ new Map();
   unknown = false;
   stopping = false;
-  async stop() {
+  joining;
+  // Last observed host checkpoint bytes, not restoration evidence or an execution ledger.
+  lastStamp;
+  stop() {
+    if (this.joining) return this.joining;
     this.stopping = true;
-    this.active?.abort.abort(new Error("Host stopped assignment"));
-    if (this.active) await this.active.done.catch(() => {
+    const children = [...this.active.values()];
+    this.joining = Promise.all(children.map((child) => child.done.catch(() => {
       this.unknown = true;
-    });
-    return !this.unknown;
+    }))).then(() => !this.unknown);
+    for (const child of children) {
+      child.abort.abort(new Error("Host stopped assignment"));
+      if (!child.launched) child.release();
+    }
+    return this.joining;
   }
-  run(input) {
-    const existing = inspectAssignment(input.history(), input.id);
-    if (existing) return Promise.resolve(existing);
-    check(!this.active && !this.unknown && !this.stopping, "Assignment handler is active, stopped or uncertain");
-    check(latest(input.history()).every((r) => r.settled && ["rejected", "succeeded", "failed", "cancelled"].includes(r.state)), "Unsettled prior assignment; inspect native history before reuse");
-    const abort = new AbortController();
-    const done = this.execute({
+  watchCancellation(signal, done) {
+    if (!signal) return;
+    if (signal.aborted) {
+      void this.stop();
+      return;
+    }
+    const onAbort = () => {
+      void this.stop();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const remove = () => signal.removeEventListener("abort", onAbort);
+    void done.then(remove, remove);
+  }
+  /** Only exact native live records exempt history holds; correlation alone is never sufficient. */
+  assertHistory(history) {
+    for (const r of latest(history)) {
+      if (r.settled && ["rejected", "succeeded", "failed", "cancelled"].includes(r.state)) continue;
+      const owner = this.active.get(r.id);
+      check(
+        owner && !r.settled && ["launching", "running"].includes(r.state) && ownsRecord(owner, r),
+        "Unsettled prior assignment has unknown writers; inspect native history before reuse"
+      );
+    }
+  }
+  assertIdle() {
+    check(!this.active.size && !this.unknown, "Assignment handler has live or unknown writers");
+  }
+  /** Join a reserved identity without dispatching again, including its pre-record gap. */
+  join(id) {
+    return this.active.get(id)?.result;
+  }
+  ownsStep(correlation, stepId, scopeDigest, history) {
+    return [...this.active.values()].some((peer) => sameCohort(correlation, peer.assignment.correlation) && peer.assignment.correlation.step_id === stepId && peer.assignment.correlation.scope_digest === scopeDigest) || latest(history).some((r) => r.settled && ["succeeded", "failed", "cancelled"].includes(r.state) && validCorrelation(r) && validClaims(r) && sameCohort(correlation, r) && r.step_id === stepId && r.scope_digest === scopeDigest && !!r.native_id && !!r.transcript_path);
+  }
+  knownStamp(correlation, stamp) {
+    return this.lastStamp?.value === stamp && sameCohort(correlation, this.lastStamp.correlation) || [...this.active.values()].some((peer) => sameCohort(correlation, peer.assignment.correlation) && peer.stamp === stamp);
+  }
+  reserve(input, exclusive = false, stamp) {
+    const a = {
       ...input,
-      model: structuredClone(input.model),
+      correlation: structuredClone(input.correlation),
       readPaths: [...input.readPaths],
       writePaths: [...input.writePaths],
-      protectedPaths: [...input.protectedPaths],
-      signal: input.signal ? AbortSignal.any([input.signal, abort.signal]) : abort.signal
-    }).then((r) => {
-      if (!r.settled) this.unknown = true;
-      return r;
-    }).finally(() => {
-      this.active = void 0;
-    });
-    this.active = { abort, done };
-    return done;
-  }
-  async execute(a) {
+      protectedPaths: [...input.protectedPaths]
+    };
     check(a.id.trim() && a.instructions.trim(), "Explicit ID and instructions required");
-    check((a.timeoutMs ?? 18e5) > 0 && (a.settleTimeoutMs ?? 5e3) > 0, "Invalid assignment deadline");
-    const { cwd, sessionDir, writes, fileAllowed } = preflightAssignment(a);
+    const scope = preflightAssignment(a);
+    check(validCorrelation(a.correlation) && a.correlation.plan_path === canonical(a.correlation.plan_path), "Explicit canonical assignment correlation required");
+    if (input.signal?.aborted) {
+      void this.stop();
+      input.signal.throwIfAborted();
+    }
+    check(!this.unknown && !this.stopping, "Assignment handler is stopped or uncertain");
+    check(!this.active.has(a.id) && !inspectAssignment(input.history(), a.id), "Assignment ID is already reserved");
+    this.assertHistory(input.history());
+    for (const peer of this.active.values()) {
+      check(sameCohort(a.correlation, peer.assignment.correlation), "Foreign-cohort active assignment");
+      check(!exclusive && !peer.exclusive, "Sequential execution or review requires exclusive admission");
+      check(!a.correlation.step_id || a.correlation.step_id !== peer.assignment.correlation.step_id, "Duplicate active step ownership");
+      check(
+        ![...scope.writes].some((p) => peer.scope.reads.has(p)) && ![...peer.scope.writes].some((p) => scope.reads.has(p)),
+        "Assignment read/write claims conflict with an active assignment"
+      );
+    }
+    check(this.active.size < this.capacity, "Assignment capacity reached");
+    const abort = new AbortController();
+    let resolve7, reject;
+    const done = new Promise((yes, no) => {
+      resolve7 = yes;
+      reject = no;
+    });
+    void done.catch(() => {
+    });
+    const live = {
+      abort,
+      done,
+      result: done,
+      assignment: a,
+      scope,
+      exclusive,
+      stamp,
+      launched: false,
+      release: () => {
+        if (live.launched || this.active.get(a.id) !== live) return;
+        this.active.delete(a.id);
+        reject(new Error("Prelaunch reservation released"));
+      }
+    };
+    live.result = done.then(async (r) => {
+      if (this.stopping) await this.stop();
+      return r;
+    }, async (error) => {
+      if (this.stopping) await this.stop();
+      throw error;
+    });
+    void live.result.catch(() => {
+    });
+    this.active.set(a.id, live);
+    this.watchCancellation(input.signal, done);
+    const current = () => {
+      abort.signal.throwIfAborted();
+      check(!this.stopping && !this.unknown && this.active.get(a.id) === live, "Assignment reservation is no longer current");
+      preflightAssignment(a);
+      this.assertHistory(a.history());
+    };
+    return {
+      signal: abort.signal,
+      assertCurrent: (value) => {
+        current();
+        check(live.stamp === value, "Plan changed during dispatch preflight; inspect the current requirements");
+      },
+      advance: (before, after) => {
+        current();
+        check(live.stamp === before, "Plan changed during dispatch preflight; inspect the current requirements");
+        for (const peer of this.active.values()) if (sameCohort(a.correlation, peer.assignment.correlation) && peer.stamp === before) peer.stamp = after;
+        this.lastStamp = { correlation: structuredClone(a.correlation), value: after };
+      },
+      release: live.release,
+      launch: (input2) => {
+        try {
+          current();
+          check(!live.launched, "Assignment reservation already launched");
+          check(input2.id === a.id && sameCohort(input2.correlation, a.correlation) && input2.correlation.step_id === a.correlation.step_id && input2.correlation.scope_digest === a.correlation.scope_digest && input2.instructions === a.instructions && input2.context === a.context && input2.cwd === a.cwd && input2.sessionDir === a.sessionDir && samePaths(input2.readPaths, a.readPaths) && samePaths(input2.writePaths, a.writePaths) && samePaths(input2.protectedPaths, a.protectedPaths), "Launch differs from reserved assignment");
+          check((input2.timeoutMs ?? 18e5) > 0 && (input2.settleTimeoutMs ?? 5e3) > 0, "Invalid assignment deadline");
+          live.launched = true;
+          const assignment = { ...input2, ...a, model: structuredClone(input2.model), signal: abort.signal };
+          void this.execute(assignment, scope, (r) => {
+            live.record = structuredClone(r);
+          }).then((r) => {
+            if (!r.settled) this.unknown = true;
+            return r;
+          }, (error) => {
+            this.unknown = true;
+            throw error;
+          }).finally(() => {
+            this.active.delete(a.id);
+          }).then(resolve7, reject);
+          return live.result;
+        } catch (error) {
+          live.release();
+          return Promise.reject(error);
+        }
+      }
+    };
+  }
+  run(input) {
+    try {
+      const callerSignal = input.signal;
+      const history = latest(input.history()), live = this.active.get(input.id);
+      if (!live) {
+        const existing = inspectAssignment(history, input.id);
+        if (existing) return Promise.resolve(existing);
+      }
+      const a = {
+        ...input,
+        model: structuredClone(input.model),
+        correlation: structuredClone(input.correlation),
+        readPaths: [...input.readPaths],
+        writePaths: [...input.writePaths],
+        protectedPaths: [...input.protectedPaths]
+      };
+      check(a.id.trim() && a.instructions.trim(), "Explicit ID and instructions required");
+      check((a.timeoutMs ?? 18e5) > 0 && (a.settleTimeoutMs ?? 5e3) > 0, "Invalid assignment deadline");
+      const scope = preflightAssignment(a);
+      check(a.correlation && validCorrelation(a.correlation) && a.correlation.plan_path === canonical(a.correlation.plan_path), "Explicit canonical assignment correlation required");
+      if (live) {
+        check(sameCohort(a.correlation, live.assignment.correlation) && a.correlation.step_id === live.assignment.correlation.step_id && a.correlation.scope_digest === live.assignment.correlation.scope_digest && scope.cwd === live.scope.cwd && scope.sessionDir === live.scope.sessionDir && samePaths([...scope.reads], [...live.scope.reads]) && samePaths([...scope.writes], [...live.scope.writes]) && a.instructions === live.assignment.instructions && a.context === live.assignment.context, "Assignment ID is already reserved for different work");
+        const existing = history.find((r) => r.id === a.id);
+        check(!existing || ownsRecord(live, existing), "Unsettled prior assignment does not match its live reservation");
+        this.watchCancellation(callerSignal, live.done);
+        return live.result;
+      }
+      if (callerSignal?.aborted) return this.stop().then(() => {
+        throw callerSignal.reason;
+      });
+      check(!this.unknown && !this.stopping, "Assignment handler is stopped or uncertain");
+      return this.reserve(a).launch(a);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  async execute(a, scope, observeRecord) {
+    const { cwd, sessionDir, reads, writes, fileAllowed } = scope;
     let session, record2, unsubscribe;
-    let settled = false, stopReason, abortWork;
+    let settled = false, abortSettled = true, stopReason, abortWork;
     const writers = /* @__PURE__ */ new Set(), stop = new AbortController();
     let rejectStop, joinTimer;
     const deadline = new Promise((_, reject) => {
@@ -2466,7 +2786,10 @@ var Subagents = class {
       stopReason ??= reason;
       stop.abort();
       if (session && !abortWork) {
-        abortWork = session.abort();
+        abortSettled = false;
+        abortWork = session.abort().then(() => {
+          abortSettled = true;
+        });
         void abortWork.catch(() => {
         });
       }
@@ -2483,27 +2806,34 @@ var Subagents = class {
     });
     const save = (fields) => {
       record2 = { ...record2, ...fields, updated_at: Date.now() };
+      observeRecord(record2);
       a.record(structuredClone(record2));
       return record2;
     };
     let monitoring, monitor;
     let timer;
     a.signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => cancel("Assignment deadline elapsed"), a.timeoutMs ?? 18e5);
     try {
       guard();
-      await permitted(async () => {
+      await Promise.race([permitted(async () => {
         const manager = SessionManager.create(cwd, sessionDir);
         record2 = {
+          ...a.correlation,
           id: a.id,
           state: "launching",
           native_id: manager.getSessionId(),
           transcript_path: manager.getSessionFile(),
           context_digest: hash(a.instructions + "\0" + a.context),
           settled: false,
-          started_at: Date.now()
+          started_at: Date.now(),
+          workspace: cwd,
+          read_paths: [...reads].sort(),
+          write_paths: [...writes].sort()
         };
         save({});
-        manager.appendCustomEntry(AGENT_ENTRY, record2);
+        manager.appendCustomEntry(AGENT_ENTRY, structuredClone(record2));
+        guard();
         const writeFile = async (file, content) => {
           guard();
           fileAllowed(file, true);
@@ -2554,7 +2884,6 @@ var Subagents = class {
           });
           return work;
         } }));
-        timer = setTimeout(() => cancel("Assignment deadline elapsed"), a.timeoutMs ?? 18e5);
         const creating = createAgentSession({
           cwd,
           agentDir: path4.join(sessionDir, "agent"),
@@ -2593,34 +2922,49 @@ var Subagents = class {
           } catch {
           }
         });
-      });
+      }), deadline]);
       monitor = setInterval(() => {
         if (!monitoring && !stopReason) monitoring = permitted(async () => {
         }).catch((error) => cancel(`Authority revoked: ${String(error)}`)).finally(() => {
           monitoring = void 0;
         });
       }, 100);
-      const { pending } = await permitted(async () => {
+      const { pending } = await Promise.race([permitted(async () => {
         const pending2 = session.prompt(a.instructions, { expandPromptTemplates: false });
         void pending2.catch(() => {
         });
         return { pending: pending2 };
-      });
+      }), deadline]);
       await Promise.race([pending, deadline]);
       await Promise.race([Promise.all([session.waitForIdle(), abortWork, ...writers]), deadline]);
       check(settled && session.isIdle && writers.size === 0, "No observed SDK/tool settlement");
-      if (!stopReason) await permitted(async () => {
-      });
+      clearInterval(monitor);
+      if (monitoring) await Promise.race([monitoring, deadline]);
+      if (!stopReason) await Promise.race([permitted(async () => {
+      }), deadline]);
+      await Promise.race([Promise.all([session.waitForIdle(), abortWork, ...writers]), deadline]);
       const messages = session.sessionManager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : []);
       const last = [...messages].reverse().find((m) => m.role === "assistant");
       const failed = last?.stopReason !== "stop" || messages.some((m) => m.role === "toolResult" && m.isError);
       check(fs3.existsSync(record2.transcript_path), "Native transcript was not persisted");
-      return save({
-        state: stopReason ? "cancelled" : failed ? "failed" : "succeeded",
-        settled: true,
-        report: session.getLastAssistantText(),
-        limitation: stopReason
-      });
+      check(settled && abortSettled && session.isIdle && writers.size === 0 && !monitoring, "Settlement changed during final authority check");
+      const branch = session.sessionManager.getBranch();
+      const intent = branch.find((e) => e.type === "custom" && e.customType === AGENT_ENTRY);
+      const reportEntry = [...branch].reverse().find((e) => e.type === "message" && e.message.role === "assistant");
+      check(intent && intent.type === "custom" && intent.data.state === "launching" && intentDigest(intent.data) === intentDigest(record2), "Native launching intent changed");
+      const state = stopReason ? "cancelled" : failed ? "failed" : "succeeded";
+      const marker = {
+        version: 1,
+        assignment_id: record2.id,
+        native_id: record2.native_id,
+        intent_digest: intentDigest(record2),
+        intent_entry_id: intent.id,
+        report_entry_id: reportEntry?.id ?? null,
+        state
+      };
+      session.sessionManager.appendCustomEntry(SETTLEMENT_ENTRY, marker);
+      const evidence = nativeOutcome(record2, sessionDir);
+      return save({ state, settled: true, report: evidence.report, limitation: stopReason });
     } catch (error) {
       if (!record2) throw error;
       this.unknown = true;
@@ -2631,9 +2975,10 @@ var Subagents = class {
     } finally {
       a.signal?.removeEventListener("abort", onAbort);
       clearInterval(monitor);
+      await Promise.race([Promise.resolve(monitoring), deadline]).catch(() => {
+      });
       clearTimeout(timer);
       clearTimeout(joinTimer);
-      await monitoring;
       unsubscribe?.();
       session?.dispose();
     }
@@ -3178,7 +3523,9 @@ function registerOwnerFence(pi) {
 function assignmentHistory(ctx) {
   return (ctx.sessionManager.getEntries?.() ?? ctx.sessionManager.getBranch()).filter((e) => e.type === "custom" && e.customType === AGENT_ENTRY).map((e) => e.data);
 }
+var managedHandlers = /* @__PURE__ */ new WeakMap();
 function assertAgentIdle(ctx) {
+  managedHandlers.get(ctx.sessionManager)?.assertIdle();
   const history = assignmentHistory(ctx);
   for (const id of new Set(history.map((r) => r?.id))) {
     const state = inspectAssignment(history, id);
@@ -3209,18 +3556,21 @@ function registerAgentTool(pi, observer) {
   pi.registerTool({
     name: "hyperion_agent",
     label: "Hyperion assignment",
-    executionMode: "sequential",
-    description: "Run ONE explicitly authorized foreground assignment, or inspect its record. Run validates current selected scope and workspace files, then records the in_progress checkpoint before launch; no manual start checkpoint is needed. Paths must be inside the coordinator's working directory even when explicitly listed. Pre-launch rejection returns state=rejected, no native session, and an actionable reason visible in Agents. Inspect the report before a separate completion checkpoint. No parent history, shell/tests, nested agents, scheduling or automatic completion. Repeated IDs inspect, never relaunch; unknown writers hold new work. Reviews are read-only; findings never authorize fixes.",
-    promptSnippet: "Dispatch one current-user-authorized assignment with built-in preflight/start checkpoint; inspect its report before completing the step.",
+    executionMode: "parallel",
+    description: "Run ONE explicitly authorized foreground assignment per call, with at most TWO live children in the same request_id cohort, or inspect read-only settlement evidence. Inspect with plan_path/request_id and optional assignment_id for group inspection. Recovery never changes parent lifecycle or unknown-writer fences; resume the original coordinator, with no automatic reconciliation or continuation. Run validates current selected scope and workspace files, then records the in_progress checkpoint before launch; no manual start checkpoint is needed. Paths must be inside the coordinator's working directory even when explicitly listed. Pre-launch rejection returns state=rejected, no native session, and an actionable reason visible in Agents. Inspect the report before a separate completion checkpoint. No parent history, shell/tests, nested agents, scheduling or automatic completion. Repeated IDs inspect, never relaunch; unknown writers hold new work. Reviews are read-only; findings never authorize fixes.",
+    promptSnippet: "Dispatch one current-user-authorized assignment per call (two-child bound) with built-in preflight/start checkpoint; inspect settlement and verify its report before completing the step.",
     promptGuidelines: [
       "Use run directly for selected ready work under CURRENT user delegation permission; it reads canonical state and checkpoints the start. Saved approval never authorizes launch.",
       "Supply exact read/write files inside the coordinator workspace, explicit context and a stable assignment ID derived from the current Run request and step. No parent history or shell/tests.",
+      "Only two known same-request children may overlap. Read/read claims may overlap; write conflicts, duplicate active steps, sequential mode and review/handover barriers constrain admission. No scheduler or refill.",
+      "Await all affected children after rejection/cancellation. Host abort acknowledgement is not quiescence; unknown writers hold integration, reuse and transfer.",
+      "Resume the original persisted coordinator only. Session inspection returns evidence, never clears parent fences or replays scripts; sleep/network loss/process death do not guarantee continuation.",
       "state=rejected means no native session launched; read rejection.code/workspace/path and limitation, not inspect/launch loops. Repeated IDs only inspect; never retry uncertain work.",
       "Use returned plan_revision for a separate evidence-bearing completion checkpoint after inspecting the report and verifying acceptance; stale revisions require reconciliation."
     ],
     parameters: Type.Object({
       action: Type.Union([Type.Literal("run"), Type.Literal("inspect")]),
-      assignment_id: Type.String({ minLength: 1, maxLength: 200 }),
+      assignment_id: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Required on run; omit only on inspect with plan_path/request_id to inspect the group." })),
       plan_path: Type.Optional(Type.String()),
       request_id: Type.Optional(Type.String()),
       step_id: Type.Optional(Type.String()),
@@ -3229,16 +3579,63 @@ function registerAgentTool(pi, observer) {
       read_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2e3, description: "Exact files inside the coordinator working directory. Relative paths resolve there; listing an external path does not permit it." })),
       write_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2e3, description: "Exact writable files inside the coordinator working directory. Reviews require []." }))
     }),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(_id, input, signal, _update, ctx) {
+      const params = { ...input, assignment_id: input.assignment_id ?? "" };
       const actor = ctx.sessionManager.getSessionId(), started = epoch;
+      managedHandlers.set(ctx.sessionManager, handler);
       const history = () => assignmentHistory(ctx);
-      const previous = inspectAssignment(history(), params.assignment_id);
-      if (params.action === "inspect" || previous) {
-        const result = previous ?? { id: params.assignment_id, state: "absent" };
-        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, ...params.action === "run" && previous?.state === "rejected" ? { isError: true } : {} };
+      requireValue(params.action === "inspect" || params.assignment_id.trim(), "Run requires an assignment_id");
+      const previous = params.assignment_id ? inspectAssignment(history(), params.assignment_id) : void 0;
+      if (params.action === "run" && previous?.state === "rejected") {
+        return { content: [{ type: "text", text: JSON.stringify(previous) }], details: previous, isError: true };
       }
-      let correlation = { request_id: params.request_id, step_id: params.step_id };
+      if (params.action === "inspect" || previous) {
+        requireValue(!!params.plan_path === !!params.request_id, "Inspection needs both plan_path and request_id, or an existing assignment ID");
+        const recoverable = previous?.coordinator_id && previous.workspace && previous.read_paths && previous.write_paths;
+        const planPath = params.plan_path ?? (recoverable ? previous?.plan_path : void 0), requestId = params.request_id ?? (recoverable ? previous?.request_id : void 0);
+        requireValue(params.assignment_id || planPath && requestId, "Group inspection needs plan_path and request_id");
+        let result = previous ?? { id: params.assignment_id, state: "absent" };
+        if (planPath && requestId) {
+          const snapshot = await loadPlanSnapshot(planPath, { cwd: ctx.cwd, followRedirects: false });
+          requireValue(started === epoch && actor === ctx.sessionManager.getSessionId(), "Inspection coordinator changed");
+          assertExecutionOwner(snapshot.plan, actor);
+          requireValue(
+            snapshot.plan.execution?.request_id === requestId || snapshot.plan.plan_reviews?.some((r) => r.request_id === requestId),
+            "Inspection requires the current canonical request"
+          );
+          const scope = {
+            coordinator_id: actor,
+            coordinator_session_dir: ctx.sessionManager.getSessionDir(),
+            workspace: canonicalPath(ctx.cwd),
+            plan_path: snapshot.path,
+            plan_id: snapshot.plan.plan_id,
+            request_id: requestId,
+            scopeDigest: (r) => {
+              const step = r.step_id ? snapshot.plan.steps.find((s) => s.id === r.step_id) : void 0;
+              if (r.step_id && !step) return void 0;
+              const fingerprint = step ? stepFingerprint(step).scope : JSON.stringify({
+                title: snapshot.plan.title,
+                steps: snapshot.plan.steps.map(stepFingerprint),
+                review: snapshot.plan.plan_reviews?.find((q) => q.request_id === requestId)?.target_step_ids
+              });
+              return createHash4("sha256").update(fingerprint).digest("hex");
+            }
+          };
+          result = params.assignment_id ? inspectAssignment(history(), params.assignment_id, scope) ?? { id: params.assignment_id, state: "absent" } : inspectAssignments(history(), scope);
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
+          ...params.action === "run" && previous?.state === "rejected" ? { isError: true } : {}
+        };
+      }
+      let correlation = { coordinator_id: actor, request_id: params.request_id, step_id: params.step_id };
       let title = params.step_id ?? params.assignment_id, checkpointed = false, revision;
+      let reservation;
+      const onAbort = () => {
+        void handler.stop();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const save = (event) => {
         const saved = { ...event, ...correlation, title, checkpointed, plan_revision: revision };
         pi.appendEntry(AGENT_ENTRY, saved);
@@ -3248,6 +3645,10 @@ function registerAgentTool(pi, observer) {
         }
       };
       try {
+        if (signal?.aborted) {
+          await handler.stop();
+          signal.throwIfAborted();
+        }
         requireValue(params.action === "run" && params.plan_path && params.request_id && params.instructions, "Run needs a plan, exact request ID and instructions");
         const snapshot = await loadPlanSnapshot(params.plan_path, { cwd: ctx.cwd, followRedirects: false });
         const scope = (plan) => params.step_id ? stepFingerprint(plan.steps.find((s) => s.id === params.step_id)).scope : JSON.stringify({ title: plan.title, steps: plan.steps.map(stepFingerprint), review: plan.plan_reviews?.find((r) => r.request_id === params.request_id)?.target_step_ids });
@@ -3255,42 +3656,55 @@ function registerAgentTool(pi, observer) {
         requireValue(!params.step_id || step, "Assignment step is absent");
         title = step?.title ?? snapshot.plan.title;
         const fingerprint = scope(snapshot.plan);
-        correlation = { plan_path: snapshot.path, plan_id: snapshot.plan.plan_id, request_id: params.request_id, step_id: params.step_id, scope_digest: createHash4("sha256").update(fingerprint).digest("hex") };
+        const dispatchCorrelation = {
+          coordinator_id: actor,
+          plan_path: snapshot.path,
+          plan_id: snapshot.plan.plan_id,
+          request_id: params.request_id,
+          step_id: params.step_id,
+          scope_digest: createHash4("sha256").update(fingerprint).digest("hex")
+        };
+        correlation = dispatchCorrelation;
         revision = snapshot.plan.revision;
         const guard = () => {
           signal?.throwIfAborted();
           requireValue(started === epoch && actor === ctx.sessionManager.getSessionId(), "Assignment session changed");
         };
-        const withPermission = (work, requireStarted = true) => withLock(snapshot.path, async () => {
-          guard();
-          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
-          requireValue(current.plan.plan_id === snapshot.plan.plan_id && !current.refresh_required, "Plan identity changed or needs refresh");
-          assertExecutionOwner(current.plan, actor);
-          assertLegacyIdle(current.path, current.plan);
+        const validateScope = (plan, requireStarted) => {
+          requireValue(plan.plan_id === snapshot.plan.plan_id, "Plan identity changed");
+          assertExecutionOwner(plan, actor);
+          assertLegacyIdle(snapshot.path, plan);
           if (params.step_id) {
-            const selected = assertStepExecutionAllowed(current.plan, params.step_id, { currentRunAuthorized: true, implementationAllowed: true, actorId: actor, requestId: params.request_id });
+            const selected = assertStepExecutionAllowed(plan, params.step_id, { currentRunAuthorized: true, implementationAllowed: true, actorId: actor, requestId: params.request_id });
             requireValue(selected.kind !== "handover", "Handoff is host-owned");
             requireValue(!requireStarted || selected.status === "in_progress", "Assignment start checkpoint is missing");
-            checkpointed = selected.status === "in_progress";
+            if ((plan.execution?.execution_mode ?? "sequential") === "sequential") requireValue(!plan.steps.slice(0, plan.steps.indexOf(selected)).some((s) => plan.execution.selected_step_ids.includes(s.id) && s.status !== "completed"), "Sequential mode requires plan order");
           } else {
-            const review = current.plan.plan_reviews?.find((r) => r.request_id === params.request_id);
+            const review = plan.plan_reviews?.find((r) => r.request_id === params.request_id);
             requireValue(
-              current.plan.lifecycle !== "finished" && review?.state === "requested" && !review.task_id && review.revision === snapshot.plan.revision,
+              plan.lifecycle !== "finished" && review?.state === "requested" && !review.task_id && review.revision === snapshot.plan.revision,
               "An explicit independent-review request is required; inspect existing reviewers instead of replacing them"
             );
-            requireValue(!current.plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)), "Handover is unresolved");
+            requireValue(!plan.handovers?.some((h) => ["requested", "prepared", "blocked"].includes(h.state)), "Handover is unresolved");
           }
-          requireValue(scope(current.plan) === fingerprint, "Assignment requirements changed");
-          if (!requireStarted) assertAgentIdle(ctx);
+          requireValue(scope(plan) === fingerprint, "Assignment requirements changed");
+          handler.assertHistory(history());
+          requireValue(
+            !plan.steps.some((s) => s.id !== params.step_id && s.status === "in_progress" && !handler.ownsStep(dispatchCorrelation, s.id, createHash4("sha256").update(stepFingerprint(s).scope).digest("hex"), history())),
+            "Another in-progress step has no known live assignment; reconcile its writers first"
+          );
+        };
+        const withPermission = (work) => withLock(snapshot.path, async () => {
+          guard();
+          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
+          requireValue(!current.refresh_required, "Plan identity changed or needs refresh");
+          validateScope(current.plan, true);
           revision = current.plan.revision;
           return work();
         });
-        let stateText;
         const statePath = path6.extname(snapshot.path).toLowerCase() === ".md" ? markdownStatePath(snapshot.path) : void 0;
-        const readState2 = () => statePath && fs5.existsSync(statePath) ? fs5.readFileSync(statePath, "utf8") : void 0;
-        await withPermission(async () => {
-          stateText = readState2();
-        }, false);
+        const stamp = () => createHash4("sha256").update(fs5.readFileSync(snapshot.path)).update("\0").update(statePath && fs5.existsSync(statePath) ? fs5.readFileSync(statePath) : "").digest("hex");
+        const initialStamp = stamp();
         requireValue(step && step.kind !== "review" || !params.write_paths?.length, "Reviews have no write permissions");
         const cwd = canonicalPath(ctx.cwd), files = (values = []) => values.map((p) => canonicalPath(path6.resolve(cwd, p)));
         const sessionDir = path6.join(ctx.sessionManager.getSessionDir(), "hyperion-agents", createHash4("sha256").update(actor).digest("hex"));
@@ -3310,40 +3724,59 @@ function registerAgentTool(pi, observer) {
           ]
         };
         preflightAssignment(paths);
-        const { model, runtime } = await childModelProxy(ctx, sessionDir);
-        guard();
-        if (params.step_id && !checkpointed) {
-          const startedPlan = await recordPlanProgress(snapshot, actor, snapshot.plan.revision, {
-            execution_request_id: params.request_id,
-            step_id: params.step_id,
-            status: "in_progress",
-            note: `Dispatch preflight passed; starting assignment ${params.assignment_id}.`
-          }, () => {
-            guard();
-            preflightAssignment(paths);
-            requireValue(
-              createHash4("sha256").update(fs5.readFileSync(snapshot.path, "utf8")).digest("hex") === snapshot.source_digest && readState2() === stateText,
-              "Plan changed during dispatch preflight; inspect the current requirements"
-            );
-          }, ctx);
-          revision = startedPlan.plan.revision;
-          checkpointed = true;
-        }
-        await withPermission(async () => {
-        });
+        const coordinatorFile = ctx.sessionManager.getSessionFile();
+        requireValue(coordinatorFile && fs5.existsSync(coordinatorFile), "Assignments require an already-persisted coordinator Pi session; enable session storage before dispatch.");
         const requirements = step ? { title: step.title, description: step.description, done_when: step.done_when, checks: step.checks, comments: step.comments } : { title: snapshot.plan.title, revision: snapshot.plan.revision, steps: snapshot.plan.steps.map((s) => ({ id: s.id, title: s.title, description: s.description, done_when: s.done_when, checks: s.checks, comments: s.comments })) };
-        const result = await handler.run({
+        const admission = {
           id: params.assignment_id,
           ...paths,
+          correlation: dispatchCorrelation,
           instructions: params.instructions,
           context: JSON.stringify({ requirements, explicit_context: params.context ?? "" }),
+          signal,
+          history
+        };
+        let joined, repeated;
+        await withLock(snapshot.path, async () => {
+          guard();
+          joined = handler.join(params.assignment_id);
+          repeated = inspectAssignment(history(), params.assignment_id);
+          if (joined || repeated) return;
+          const before = stamp();
+          requireValue(before === initialStamp || handler.knownStamp(dispatchCorrelation, before), "Plan changed during dispatch preflight; inspect the current requirements");
+          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
+          requireValue(!current.refresh_required, "Plan identity changed or needs refresh");
+          validateScope(current.plan, false);
+          reservation = handler.reserve(admission, !step || step.kind === "review" || (current.plan.execution?.execution_mode ?? "sequential") === "sequential", before);
+        });
+        if (joined || repeated) {
+          const result2 = joined ? await joined : repeated;
+          const details2 = inspectAssignment(history(), params.assignment_id) ?? result2;
+          return { content: [{ type: "text", text: JSON.stringify(details2) }], details: details2 };
+        }
+        const { model, runtime } = await childModelProxy(ctx, sessionDir);
+        let beforeStart = "";
+        const startedPlan = await mutatePlan(snapshot.path, actor, (plan) => {
+          validateScope(plan, false);
+          reservation.assertCurrent(beforeStart);
+          if (!params.step_id || plan.steps.find((s) => s.id === params.step_id).status === "in_progress") return [plan, false];
+          return checkpoint(plan, plan.revision, params.step_id, "in_progress", `Dispatch preflight passed; starting assignment ${params.assignment_id}.`);
+        }, { expectedPlanId: snapshot.plan.plan_id, beforeWrite: () => {
+          guard();
+          beforeStart = stamp();
+          reservation.assertCurrent(beforeStart);
+        }, afterWrite: () => {
+          reservation.advance(beforeStart, stamp());
+        } });
+        revision = startedPlan.plan.revision;
+        checkpointed = !!params.step_id;
+        const result = await reservation.launch({
+          ...admission,
           effort: step?.reasoning_effort ?? "inherit",
           model,
           modelRuntime: runtime,
           thinkingLevel: pi.getThinkingLevel(),
-          signal,
           withPermission,
-          history,
           record: save,
           onEvent: (event) => {
             if (started === epoch) observer?.event(ctx, params.assignment_id, event);
@@ -3374,6 +3807,10 @@ function registerAgentTool(pi, observer) {
         };
         if (started === epoch && actor === ctx.sessionManager.getSessionId()) save(details);
         return { content: [{ type: "text", text: JSON.stringify(details) }], details, isError: true };
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        reservation?.release();
+        if (signal?.aborted) await handler.stop();
       }
     }
   });
@@ -3687,7 +4124,7 @@ async function handleScreenAction(action, state, ctx, pi, assertCurrent, assertS
       if (state.mutationBlocker) throw new Error(state.mutationBlocker);
       result = await applyRequestToDisk(state, request, ctx, assertCurrent, assertSession);
     } catch (error) {
-      sendIntent(`The user explicitly requests Run for these step IDs only: ${action.selectedStepIds.join(", ")}. This includes the submitted draft edits and routine plan reconciliation, including reopening this plan if finished. First drain/reconcile any existing execution; then reconcile the requested scope and apply canonical authorization using the shared core. Keep the request ID if not already used; never rewrite a prior receipt. Missing real unselected prerequisites remain outside authority. Selected reviews permit one fresh reviewer; findings do not authorize fixes. Prefer host delegation; optional hyperion_agent runs one explicitly scoped foreground assignment. Respect current session restrictions and sequential mode. Handoff is host-owned and must satisfy shared ownership transfer; Hyperion does not launch it.`, request, errorMessage(error));
+      sendIntent(`The user explicitly requests Run for these step IDs only: ${action.selectedStepIds.join(", ")}. This includes the submitted draft edits and routine plan reconciliation, including reopening this plan if finished. First drain/reconcile any existing execution; then reconcile the requested scope and apply canonical authorization using the shared core. Keep the request ID if not already used; never rewrite a prior receipt. Missing real unselected prerequisites remain outside authority. Selected reviews permit one fresh reviewer; findings do not authorize fixes. Prefer host delegation; optional hyperion_agent runs one explicitly scoped foreground assignment per call, bounded to two same-request children. Respect current session restrictions and sequential mode. Handoff is host-owned and must satisfy shared ownership transfer; Hyperion does not launch it.`, request, errorMessage(error));
       return "close";
     }
     const selected = result.plan.execution?.selected_step_ids ?? action.selectedStepIds;
@@ -3698,7 +4135,7 @@ async function handleScreenAction(action, state, ctx, pi, assertCurrent, assertS
     sendSavedRequest(userMessage(result.path, [
       `The user explicitly authorized Run for these step IDs only: ${selected.join(", ")}.`,
       `The accepted plan request ID is ${request.request_id}; current canonical revision is ${result.plan.revision}. Do not apply this request a second time.`,
-      `Execution mode: ${result.plan.execution?.execution_mode ?? "sequential"}. Keep coordination here. Respect current user restrictions on worker sessions. Prefer an available host delegate; optional hyperion_agent runs one foreground assignment, not a wave. Explicit sequential mode preserves plan order. Use current-session sequential fallback when delegation is unavailable or unsafe. Never expand scope or resume from stored approval.`,
+      `Execution mode: ${result.plan.execution?.execution_mode ?? "sequential"}. Keep coordination here. Respect current user restrictions on worker sessions. Prefer an available host delegate; optional hyperion_agent runs one foreground assignment per call with at most two known same-request children, not a scheduled wave. Explicit sequential mode preserves plan order. Use current-session sequential fallback when delegation is unavailable or unsafe. Never expand scope or resume from stored approval.`,
       "For hyperion_agent delegation, call run directly with the current request ID, selected step ID, explicit context and exact files inside this coordinator's workspace. It preflights and checkpoints the start; do not separately checkpoint it first. A structured rejected result means no native session launched: use its reason/workspace/path without extra inspect or launch attempts. Inspect results and verify acceptance before a separate completion checkpoint; returned reports are not completion. Current-session work and other host delegates still require a start checkpoint. No nested agents or automatic refill/retry. Unknown settlement holds reuse. Handoff stays host-owned and must satisfy shared readiness/ownership transfer; without that capability leave the checkpoint incomplete. Never manually complete it or launch a transfer merely to test this plan.",
       ...selected.some((id) => result.plan.steps.find((step) => step.id === id)?.kind === "review") ? ["For selected code-review steps only, drain earlier writers, checkpoint in_progress and use an explicitly authorized external fresh reviewer. Supply requirements and identified code, not parent history. Inspect the report and record its identity, revision, coverage and limitations through shared checkpoints. Hyperion does not certify tests or review artifacts; unavailable independent checks remain incomplete. Findings do not authorize fixes."] : [],
       `For current-session work or other host delegates: ${CHECKPOINT_INSTRUCTIONS}`,

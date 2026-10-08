@@ -4388,6 +4388,7 @@ async function mutatePlan(input, actorId, mutation, options = {}) {
         exportWarning = `Plan is saved; PR notes export needs retry: ${error.message}`;
       }
     }
+    options.afterWrite?.();
     return {
       path: planPath,
       plan,

@@ -53,7 +53,7 @@ Ask to finish or reopen a plan. History stays intact; reopening does not approve
 
 **Codex** uses Visualize cards with step selection, drag reordering, Ask Codex, and effort controls. Reviews and fresh-context handovers are agent-mediated.
 
-**Pi** uses a native overlay and a compact status strip. Describe plan changes in chat. Press **A** to inspect Hyperion delegates, **B** to return, and **Esc** to close. Its optional delegate runs one foreground assignment with explicit file scope; the coordinator verifies results. Pi has no built-in parallel scheduler or handoff launcher.
+**Pi** uses a native overlay and a compact status strip. Describe plan changes in chat. Press **A** to inspect Hyperion delegates, **B** to return, and **Esc** to close. Its optional delegate runs one foreground assignment per call, with up to two eligible children in one authorized Run request. Exact file claims prevent write conflicts; sequential mode stays sequential. The coordinator verifies results before completion. Read-only inspection can recover settled child reports from Pi sessions, but never clears unknown-writer fences or replays work. Pi has no parallel scheduler or handoff launcher. Session files are history, not live handles: sleep, network loss and process death do not guarantee continuation.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hyperion-plan-dark.png">

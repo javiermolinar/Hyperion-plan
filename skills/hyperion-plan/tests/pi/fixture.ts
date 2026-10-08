@@ -1,31 +1,36 @@
 // Offline SDK fixture only; production never imports this file.
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, getCurrentTools, getCurrentSystemPrompt } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
-import { Subagents, inspectAssignment, type Assignment, type AgentRecord } from "../../src/pi/subagents";
+import { Subagents, inspectAssignment, inspectAssignments, SETTLEMENT_ENTRY, type Assignment, type AgentRecord } from "../../src/pi/subagents";
+import { assertAgentIdle, registerAgentTool } from "../../src/pi/executor";
+export { assertAgentIdle };
 import assert from 'node:assert/strict';
 import { Type } from 'typebox';
 import core from '../../dist/index.cjs';
-export { Subagents, inspectAssignment, getCurrentTools, getCurrentSystemPrompt };
+export { Subagents, inspectAssignment, inspectAssignments, SETTLEMENT_ENTRY, SessionManager, getCurrentTools, getCurrentSystemPrompt };
 export async function fixture(cwd: string, respond: (context: any, signal?: AbortSignal) => any, reasoning = false) {
   const runtime = await ModelRuntime.create({ authPath: path.join(cwd, "auth.json"), modelsPath: null,
     modelsStorePath: path.join(cwd, "models.json"), refreshOnCreate: false, allowModelNetwork: false });
   const requests: any[] = [], settings: any[] = [], history: AgentRecord[] = [];
+  const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
   runtime.registerProvider("offline-agent", { baseUrl: "http://invalid.test", api: "openai-completions", apiKey: "offline",
     models: [{ id: "scripted", name: "Offline assignment", reasoning, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
     streamSimple(model, context, options) {
-      const stream = createAssistantMessageEventStream();
+      const stream = createAssistantMessageEventStream(); streams.push(stream);
       queueMicrotask(async () => {
         const message: any = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], timestamp: Date.now(), stopReason: "stop",
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
         try {
           requests.push(structuredClone(context)); settings.push(options?.reasoning);
+          const requestId = requests.length;
           const answer = await respond(context, options?.signal); options?.signal?.throwIfAborted();
           stream.push({ type: "start", partial: message });
           if (answer.tool) {
-            const toolCall = { type: "toolCall", id: `call-${requests.length}`, ...answer.tool };
+            const toolCall = { type: "toolCall", id: `call-${requestId}`, ...answer.tool };
             message.content = [toolCall]; message.stopReason = "toolUse";
             stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
             stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(toolCall.arguments), partial: message });
@@ -47,14 +52,20 @@ export async function fixture(cwd: string, respond: (context: any, signal?: Abor
     },
   });
   const options: Assignment = {
-    id: "assignment", cwd, instructions: "Implement only output.txt; return evidence, not canonical completion.", context: "EXPLICIT_REQUIREMENT",
+    id: "assignment", cwd,
+    correlation: { coordinator_id: "coordinator", plan_path: path.join(cwd, "plan.md"), plan_id: "fixture-plan",
+      request_id: "fixture-run", step_id: "work", scope_digest: "a".repeat(64) },
+    instructions: "Implement only output.txt; return evidence, not canonical completion.", context: "EXPLICIT_REQUIREMENT",
     readPaths: [], writePaths: [path.join(cwd, "output.txt")], protectedPaths: [path.join(cwd, "plan.md")],
-    sessionDir: path.join(cwd, "sessions"), effort: "high", model: runtime.getModel("offline-agent", "scripted")!,
+    sessionDir: path.join(cwd, "sessions", "hyperion-agents", createHash("sha256").update("coordinator").digest("hex")),
+    effort: "high", model: runtime.getModel("offline-agent", "scripted")!,
     modelRuntime: runtime, thinkingLevel: "off", history: () => history, record: event => history.push(structuredClone(event)),
     withPermission: async work => work(), timeoutMs: 5000, settleTimeoutMs: 100,
   };
   fs.writeFileSync(path.join(cwd, "plan.md"), "Canonical plan must remain unchanged");
-  return { options, history, requests, settings, handler: new Subagents() };
+  const inspectionScope = { coordinator_id: options.correlation.coordinator_id, coordinator_session_dir: path.join(cwd, "sessions"),
+    workspace: cwd, plan_path: options.correlation.plan_path, plan_id: options.correlation.plan_id, request_id: options.correlation.request_id };
+  return { options, history, requests, streams, settings, inspectionScope, handler: new Subagents() };
 }
 
 export default function (pi) {
@@ -114,6 +125,155 @@ export default function (pi) {
       return stream;
     },
   });
+}
+
+
+/** Pi 1.0.3-only integration, supplied by an isolated subprocess; baseline dependencies stay pinned. */
+export async function codemodeFixture(sdk: any, cwd: string, scenario: string) {
+  const makeGate = () => { let open!: () => void; const promise = new Promise<void>(resolve => { open = resolve; }); return { open, promise }; };
+  const both = makeGate(), aborted = makeGate(), finish = makeGate(), drained = makeGate();
+  const observed = new Map<string, AgentRecord>();
+  let entered = 0, aborts = 0, active = 0, maxActive = 0, childRequests = 0;
+  let script = "", lastContext: any;
+  const events: any[] = [];
+  const f = await fixture(cwd, async (context, signal) => {
+    const parent = getCurrentTools(context.messages).some(t => t.name === "codemode");
+    if (parent) {
+      if (context.messages.at(-1).role === "toolResult") return { text: "Observed Codemode result; canonical completion remains separate." };
+      return { tool: { name: "codemode", arguments: { code: script } } };
+    }
+    childRequests++;
+    const id = /CHILD_(\w+)/.exec(getCurrentSystemPrompt(context.messages))![1];
+    if (context.messages.at(-1).role === "toolResult") return { text: "REPORT_" + id };
+    active++; maxActive = Math.max(maxActive, active); entered++;
+    if (entered === 2) both.open();
+    await both.promise;
+    if (scenario === "cancel") {
+      signal!.addEventListener("abort", () => { if (++aborts === 2) aborted.open(); }, { once: true });
+      if (signal!.aborted && ++aborts === 2) aborted.open();
+      await finish.promise; signal!.throwIfAborted();
+    }
+    active--;
+    return { tool: { name: "write", arguments: { path: scenario === "partial-rejection" ? "first.txt" : id + ".txt", content: id } } };
+  });
+  let plan = core.initialize({ title: "Offline actual Codemode fork/join", steps: [
+    { id: "first", title: "First", done_when: "first.txt contains first" },
+    { id: "second", title: "Second", done_when: "second.txt contains second" },
+  ] });
+  plan = core.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision, request_id: "codemode-run",
+    intent: "implement", selected_step_ids: ["first", "second"], execution_mode: "auto", operations: [] })[0];
+  const planPath = path.join(cwd, "plan.md"); core.saveMarkdown(planPath, plan);
+  const args = ["first", "second"].map(id => ({ action: "run", assignment_id: "codemode-" + id, plan_path: planPath,
+    request_id: "codemode-run", step_id: id, instructions: "Execute CHILD_" + id, context: "CHILD_" + id,
+    write_paths: [scenario === "partial-rejection" ? "shared.txt" : id + ".txt"] }));
+  // In the rejected cohort the sole admitted child still uses its exact assigned file.
+  if (scenario === "partial-rejection") {
+    args[1].write_paths = ["first.txt"]; args[0].write_paths = ["first.txt"];
+  }
+  script = "const args = " + JSON.stringify(args) + ";\n" +
+    "const joined = await Promise.allSettled(args.map(a => tools.hyperion_agent(a).then(JSON.parse)));\n" +
+    'text("JOIN=" + JSON.stringify(joined.map(r => r.status === "fulfilled" ? { status: r.status, state: r.value.state, native_id: r.value.native_id } : { status: r.status, reason: String(r.reason) })));\n' +
+    'store("cohort", args);';
+  const createParent = async (manager: any) => {
+    const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: path.join(cwd, "parent-agent"),
+      noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+      systemPrompt: "Offline fixture. Invoke exactly the scripted tool; no ambient files or network.",
+      extensionFactories: [
+        (pi: any) => {
+          registerAgentTool(pi, { record(ctx, record) {
+            lastContext = ctx; observed.set(record.id, record);
+            if (observed.size === 2 && [...observed.values()].every(r => r.settled || r.state === "unknown")) drained.open();
+          }, event() {} });
+          pi.on("session_start", (_event: any, ctx: any) => { lastContext = ctx; });
+          pi.on("tool_result", (event: any) => { if (scenario === "partial-rejection" && event.toolName === "hyperion_agent" && event.isError) both.open(); });
+        },
+        sdk.createCodemodeExtension({ mode: "on" }),
+      ] });
+    await loader.reload();
+    const { session } = await sdk.createAgentSession({ cwd, agentDir: path.join(cwd, "parent-agent"), resourceLoader: loader,
+      sessionManager: manager, modelRuntime: f.options.modelRuntime, model: f.options.model, thinkingLevel: "off",
+      settingsManager: sdk.SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false },
+        defaultTools: ["codemode", "hyperion_agent"] }) });
+    session.subscribe((event: any) => { if (event.type === "tool_execution_start") events.push(structuredClone(event)); });
+    await session.bindExtensions({});
+    assert.deepEqual(session.getActiveToolNames().sort(), ["codemode", "hyperion_agent"]);
+    return session;
+  };
+  const manager = sdk.SessionManager.create(cwd, path.join(cwd, "parent"));
+  let parent = await createParent(manager);
+  const history = () => manager.getEntries().filter((e: any) => e.type === "custom" && e.customType === "hyperion.agent").map((e: any) => e.data);
+  const latest = () => [...new Map(history().map((r: any) => [r.id, r])).values()] as AgentRecord[];
+  try {
+    const pending = parent.prompt("FORK: execute this authorized fixture cohort.");
+    if (scenario === "cancel") {
+      await both.promise;
+      const cancelling = parent.abort();
+      await aborted.promise;
+      // Host abort acknowledgement is not native child quiescence.
+      assert.throws(() => assertAgentIdle(lastContext), /live or unknown writers|unknown writers/);
+      finish.open(); await cancelling;
+    }
+    await pending;
+    if (scenario === "cancel") await drained.promise;
+    const nested = events.filter(e => e.toolName === "hyperion_agent" && e.parentToolCallId);
+    assert.equal(nested.length, 2, "actual nested execution, not direct handler calls");
+    assert.ok(nested.every(e => e.toolCallId.startsWith(e.parentToolCallId + "/")));
+    assert.equal(new Set(nested.map(e => e.toolCallId)).size, 2);
+    const records = latest();
+    const current = core.loadMarkdown(planPath)[0];
+    if (scenario === "partial-rejection") {
+      assert.equal(records.filter(r => r.state === "succeeded").length, 1);
+      assert.equal(records.filter(r => r.state === "rejected").length, 1);
+      assert.equal(current.revision, plan.revision + 1);
+      const result = parent.messages.find((m: any) => m.role === "toolResult" && m.toolName === "codemode");
+      assert.ok(result && !result.isError, JSON.stringify(result));
+      const text = result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+      assert.match(text, /"status":"rejected"/); assert.match(text, /"state":"succeeded"/);
+    } else {
+      assert.equal(maxActive, 2, "two native child model operations actually overlap");
+      assert.equal(records.length, 2);
+      assert.ok(records.every(r => r.settled && r.state === (scenario === "cancel" ? "cancelled" : "succeeded")), JSON.stringify(records));
+      assert.equal(current.revision, plan.revision + 2);
+      assert.deepEqual(current.steps.map((s: any) => s.status), ["in_progress", "in_progress"]);
+      if (scenario !== "cancel") {
+        for (const id of ["first", "second"]) assert.equal(fs.readFileSync(path.join(cwd, id + ".txt"), "utf8"), id);
+        const result = parent.messages.find((m: any) => m.role === "toolResult" && m.toolName === "codemode");
+        assert.ok(result && !result.isError, JSON.stringify(result));
+        const output = result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+        const joined = JSON.parse(/JOIN=([^\n]+)/.exec(output)![1]);
+        assert.equal(joined.length, 2); assert.ok(joined.every((r: any) => r.status === "fulfilled" && r.state === "succeeded"));
+        assert.equal(new Set(joined.map((r: any) => r.native_id)).size, 2);
+      } else for (const id of ["first", "second"]) assert.equal(fs.existsSync(path.join(cwd, id + ".txt")), false);
+    }
+    let restored = false;
+    if (scenario === "restore") {
+      const first = history().find((r: any) => r.id === "codemode-first" && r.state === "launching")!;
+      // Simulated loss of parent terminal evidence; no process/laptop sleep claim.
+      manager.appendCustomEntry("hyperion.agent", { ...first, state: "unknown", settled: false });
+      const recordBefore = JSON.stringify(history()), sourceBefore = fs.readFileSync(planPath, "utf8");
+      const countBefore = childRequests, originalId = manager.getSessionId(), parentFile = manager.getSessionFile();
+      parent.dispose();
+      const reopened = sdk.SessionManager.open(parentFile);
+      assert.equal(reopened.getSessionId(), originalId);
+      parent = await createParent(reopened);
+      script = 'const saved = load("cohort"); if (!saved || saved.length !== 2) throw Error("missing native store");\n' +
+        'const group = JSON.parse(await tools.hyperion_agent({ action: "inspect", plan_path: saved[0].plan_path, request_id: saved[0].request_id }));\n' +
+        'text("RECOVERY=" + JSON.stringify(group));\n' +
+        'const repeated = await Promise.allSettled(saved.map(a => tools.hyperion_agent(a).then(JSON.parse))); text("REPEATED=" + JSON.stringify(repeated.map(r => r.status)));';
+      await parent.prompt("RESTORE: inspect the same coordinator; never replay its fork.");
+      const result = [...parent.messages].reverse().find((m: any) => m.role === "toolResult" && m.toolName === "codemode");
+      assert.ok(result && !result.isError, JSON.stringify(result));
+      const output = result.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+      assert.match(output, /"source":"child-session"/); assert.match(output, /"parent_settled":false/);
+      assert.match(output, /REPORT_first/);
+      assert.equal(childRequests, countBefore, "no child resurrection or interrupted-script replay");
+      const reopenedHistory = reopened.getEntries().filter((e: any) => e.type === "custom" && e.customType === "hyperion.agent").map((e: any) => e.data);
+      assert.equal(JSON.stringify(reopenedHistory), recordBefore); assert.equal(fs.readFileSync(planPath, "utf8"), sourceBefore);
+      assert.throws(() => assertAgentIdle(lastContext), /unknown writers/);
+      restored = true;
+    }
+    return { scenario, sdk_version: "1.0.3", max_active: maxActive, nested_calls: nested.length, restored, child_requests: childRequests };
+  } finally { finish.open(); parent.dispose(); }
 }
 
 export function workflowFixture(pi, log) {

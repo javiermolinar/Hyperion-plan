@@ -4,6 +4,12 @@
   "private": true,
   "description": "Shared Markdown-backed Hyperion plans for Codex and Pi",
   "type": "module",
+  "files": [
+    ".codex-plugin/plugin.json",
+    "assets/",
+    "skills/hyperion-plan/",
+    "README.md"
+  ],
   "keywords": [
     "pi-package"
   ],

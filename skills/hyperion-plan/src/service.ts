@@ -106,7 +106,7 @@ export async function mutatePlan(
   input: string,
   actorId: string | undefined,
   mutation: PlanMutation,
-  options: { cwd?: string; beforeWrite?: () => void; expectedPlanId?: string } = {},
+  options: { cwd?: string; beforeWrite?: () => void; expectedPlanId?: string; afterWrite?: () => void } = {},
 ): Promise<PlanMutationResult> {
   const planPath = selectedPlanPath(input, options.cwd);
   require(fs.existsSync(planPath), `Plan does not exist: ${planPath}`);
@@ -140,6 +140,8 @@ export async function mutatePlan(
         exportWarning = `Plan is saved; PR notes export needs retry: ${(error as Error).message}`;
       }
     }
+    // Host bookkeeping observes the saved canonical bytes before releasing the same lock.
+    options.afterWrite?.();
     return {
       path: planPath,
       plan,

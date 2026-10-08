@@ -10,7 +10,7 @@ import { applyRequest, parseJSON, record, requireValue as require, checkpoint, u
 import { assertStepExecutionAllowed } from "../execution-policy";
 import { canonicalPath, markdownStatePath, notesPath, withLock } from "../storage";
 import { assertExecutionOwner } from "../handovers";
-import { AGENT_ENTRY, Subagents, inspectAssignment, childModelProxy, preflightAssignment, AssignmentPreflightError, type AgentRecord } from "./subagents";
+import { AGENT_ENTRY, Subagents, inspectAssignment, inspectAssignments, childModelProxy, preflightAssignment, AssignmentPreflightError, type AgentRecord, type AssignmentCorrelation, type AssignmentReservation } from "./subagents";
 import { createPlan, loadPlanSnapshot, mutatePlan, type PlanSnapshot } from "../service";
 import { DEMO_MARKER, type PlanResolution } from "./context";
 import { CHECKPOINT_INSTRUCTIONS, OWNERSHIP_INSTRUCTIONS } from "../execution-instructions";
@@ -194,7 +194,9 @@ function assignmentHistory(ctx: ExtensionContext): AgentRecord[] {
   return (ctx.sessionManager.getEntries?.() ?? ctx.sessionManager.getBranch())
     .filter(e => e.type === "custom" && e.customType === AGENT_ENTRY).map(e => (e as any).data as AgentRecord);
 }
+const managedHandlers = new WeakMap<object, Subagents>();
 export function assertAgentIdle(ctx: ExtensionContext): void {
+  managedHandlers.get(ctx.sessionManager)?.assertIdle();
   const history = assignmentHistory(ctx);
   for (const id of new Set(history.map(r => r?.id))) {
     const state = inspectAssignment(history, id);
@@ -214,40 +216,78 @@ export function registerAgentTool(pi: ExtensionAPI, observer?: {
   pi.on("session_start", () => { epoch++; handler = new Subagents(); });
   pi.on("session_tree", async () => { epoch++; if (await handler.stop()) handler = new Subagents(); });
   pi.registerTool({
-    name: "hyperion_agent", label: "Hyperion assignment", executionMode: "sequential",
-    description: "Run ONE explicitly authorized foreground assignment, or inspect its record. Run validates current selected scope and workspace files, then records the in_progress checkpoint before launch; no manual start checkpoint is needed. Paths must be inside the coordinator's working directory even when explicitly listed. Pre-launch rejection returns state=rejected, no native session, and an actionable reason visible in Agents. Inspect the report before a separate completion checkpoint. No parent history, shell/tests, nested agents, scheduling or automatic completion. Repeated IDs inspect, never relaunch; unknown writers hold new work. Reviews are read-only; findings never authorize fixes.",
-    promptSnippet: "Dispatch one current-user-authorized assignment with built-in preflight/start checkpoint; inspect its report before completing the step.",
+    name: "hyperion_agent", label: "Hyperion assignment", executionMode: "parallel",
+    description: "Run ONE explicitly authorized foreground assignment per call, with at most TWO live children in the same request_id cohort, or inspect read-only settlement evidence. Inspect with plan_path/request_id and optional assignment_id for group inspection. Recovery never changes parent lifecycle or unknown-writer fences; resume the original coordinator, with no automatic reconciliation or continuation. Run validates current selected scope and workspace files, then records the in_progress checkpoint before launch; no manual start checkpoint is needed. Paths must be inside the coordinator's working directory even when explicitly listed. Pre-launch rejection returns state=rejected, no native session, and an actionable reason visible in Agents. Inspect the report before a separate completion checkpoint. No parent history, shell/tests, nested agents, scheduling or automatic completion. Repeated IDs inspect, never relaunch; unknown writers hold new work. Reviews are read-only; findings never authorize fixes.",
+    promptSnippet: "Dispatch one current-user-authorized assignment per call (two-child bound) with built-in preflight/start checkpoint; inspect settlement and verify its report before completing the step.",
     promptGuidelines: [
       "Use run directly for selected ready work under CURRENT user delegation permission; it reads canonical state and checkpoints the start. Saved approval never authorizes launch.",
       "Supply exact read/write files inside the coordinator workspace, explicit context and a stable assignment ID derived from the current Run request and step. No parent history or shell/tests.",
+      "Only two known same-request children may overlap. Read/read claims may overlap; write conflicts, duplicate active steps, sequential mode and review/handover barriers constrain admission. No scheduler or refill.",
+      "Await all affected children after rejection/cancellation. Host abort acknowledgement is not quiescence; unknown writers hold integration, reuse and transfer.",
+      "Resume the original persisted coordinator only. Session inspection returns evidence, never clears parent fences or replays scripts; sleep/network loss/process death do not guarantee continuation.",
       "state=rejected means no native session launched; read rejection.code/workspace/path and limitation, not inspect/launch loops. Repeated IDs only inspect; never retry uncertain work.",
       "Use returned plan_revision for a separate evidence-bearing completion checkpoint after inspecting the report and verifying acceptance; stale revisions require reconciliation.",
     ],
     parameters: Type.Object({
       action: Type.Union([Type.Literal("run"), Type.Literal("inspect")]),
-      assignment_id: Type.String({ minLength: 1, maxLength: 200 }),
+      assignment_id: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Required on run; omit only on inspect with plan_path/request_id to inspect the group." })),
       plan_path: Type.Optional(Type.String()), request_id: Type.Optional(Type.String()), step_id: Type.Optional(Type.String()),
       instructions: Type.Optional(Type.String({ minLength: 1, maxLength: 20000 })),
       context: Type.Optional(Type.String({ maxLength: 30000, description: "Explicit task context only, never parent conversation or a suggested review verdict." })),
       read_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2000, description: "Exact files inside the coordinator working directory. Relative paths resolve there; listing an external path does not permit it." })),
       write_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2000, description: "Exact writable files inside the coordinator working directory. Reviews require []." })),
     }),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(_id, input, signal, _update, ctx) {
+      const params = { ...input, assignment_id: input.assignment_id ?? "" };
       const actor = ctx.sessionManager.getSessionId(), started = epoch;
+      managedHandlers.set(ctx.sessionManager, handler);
       const history = () => assignmentHistory(ctx);
-      const previous = inspectAssignment(history(), params.assignment_id);
-      if (params.action === "inspect" || previous) {
-        const result = previous ?? { id: params.assignment_id, state: "absent" };
-        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, ...(params.action === "run" && previous?.state === "rejected" ? { isError: true } : {}) };
+      require(params.action === "inspect" || params.assignment_id.trim(), "Run requires an assignment_id");
+      const previous = params.assignment_id ? inspectAssignment(history(), params.assignment_id) : undefined;
+      if (params.action === "run" && previous?.state === "rejected") {
+        // Preserve historical rejection receipts exactly; this is not renewed admission.
+        return { content: [{ type: "text", text: JSON.stringify(previous) }], details: previous, isError: true };
       }
-      let correlation: Record<string, unknown> = { request_id: params.request_id, step_id: params.step_id };
+      if (params.action === "inspect" || previous) {
+        require(!!params.plan_path === !!params.request_id, "Inspection needs both plan_path and request_id, or an existing assignment ID");
+        const recoverable = previous?.coordinator_id && previous.workspace && previous.read_paths && previous.write_paths;
+        const planPath = params.plan_path ?? (recoverable ? previous?.plan_path : undefined),
+          requestId = params.request_id ?? (recoverable ? previous?.request_id : undefined);
+        require(params.assignment_id || (planPath && requestId), "Group inspection needs plan_path and request_id");
+        let result: unknown = previous ?? { id: params.assignment_id, state: "absent" };
+        if (planPath && requestId) {
+          const snapshot = await loadPlanSnapshot(planPath, { cwd: ctx.cwd, followRedirects: false });
+          require(started === epoch && actor === ctx.sessionManager.getSessionId(), "Inspection coordinator changed");
+          assertExecutionOwner(snapshot.plan, actor);
+          require(snapshot.plan.execution?.request_id === requestId || snapshot.plan.plan_reviews?.some(r => r.request_id === requestId),
+            "Inspection requires the current canonical request");
+          const scope = { coordinator_id: actor, coordinator_session_dir: ctx.sessionManager.getSessionDir(), workspace: canonicalPath(ctx.cwd),
+            plan_path: snapshot.path, plan_id: snapshot.plan.plan_id, request_id: requestId,
+            scopeDigest: (r: AgentRecord) => {
+              const step = r.step_id ? snapshot.plan.steps.find(s => s.id === r.step_id) : undefined;
+              if (r.step_id && !step) return undefined;
+              const fingerprint = step ? stepFingerprint(step).scope : JSON.stringify({ title: snapshot.plan.title,
+                steps: snapshot.plan.steps.map(stepFingerprint), review: snapshot.plan.plan_reviews?.find(q => q.request_id === requestId)?.target_step_ids });
+              return createHash("sha256").update(fingerprint).digest("hex");
+            } };
+          result = params.assignment_id ? inspectAssignment(history(), params.assignment_id, scope) ?? { id: params.assignment_id, state: "absent" }
+            : inspectAssignments(history(), scope);
+        }
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result,
+          ...(params.action === "run" && previous?.state === "rejected" ? { isError: true } : {}) };
+      }
+      let correlation: Partial<AssignmentCorrelation> = { coordinator_id: actor, request_id: params.request_id, step_id: params.step_id };
       let title = params.step_id ?? params.assignment_id, checkpointed = false, revision: number | undefined;
+      let reservation: AssignmentReservation | undefined;
+      const onAbort = () => { void handler.stop(); };
+      signal?.addEventListener("abort", onAbort, { once: true });
       const save = (event: AgentRecord) => {
         const saved = { ...event, ...correlation, title, checkpointed, plan_revision: revision };
         pi.appendEntry(AGENT_ENTRY, saved);
         try { observer?.record(ctx, saved); } catch { /* Observers cannot change execution. */ }
       };
       try {
+        if (signal?.aborted) { await handler.stop(); signal.throwIfAborted(); }
         require(params.action === "run" && params.plan_path && params.request_id && params.instructions, "Run needs a plan, exact request ID and instructions");
         const snapshot = await loadPlanSnapshot(params.plan_path, { cwd: ctx.cwd, followRedirects: false });
         const scope = (plan: Plan) => params.step_id
@@ -257,66 +297,87 @@ export function registerAgentTool(pi: ExtensionAPI, observer?: {
         require(!params.step_id || step, "Assignment step is absent");
         title = step?.title ?? snapshot.plan.title;
         const fingerprint = scope(snapshot.plan);
-        correlation = { plan_path: snapshot.path, plan_id: snapshot.plan.plan_id, request_id: params.request_id, step_id: params.step_id, scope_digest: createHash("sha256").update(fingerprint).digest("hex") };
+        const dispatchCorrelation: AssignmentCorrelation = { coordinator_id: actor, plan_path: snapshot.path, plan_id: snapshot.plan.plan_id,
+          request_id: params.request_id, step_id: params.step_id, scope_digest: createHash("sha256").update(fingerprint).digest("hex") };
+        correlation = dispatchCorrelation;
         revision = snapshot.plan.revision;
         const guard = () => {
           signal?.throwIfAborted();
           require(started === epoch && actor === ctx.sessionManager.getSessionId(), "Assignment session changed");
         };
-        const withPermission = <T>(work: () => Promise<T>, requireStarted = true) => withLock(snapshot.path, async () => {
-          guard();
-          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
-          require(current.plan.plan_id === snapshot.plan.plan_id && !current.refresh_required, "Plan identity changed or needs refresh");
-          assertExecutionOwner(current.plan, actor); assertLegacyIdle(current.path, current.plan);
+        const validateScope = (plan: Plan, requireStarted: boolean) => {
+          require(plan.plan_id === snapshot.plan.plan_id, "Plan identity changed");
+          assertExecutionOwner(plan, actor); assertLegacyIdle(snapshot.path, plan);
           if (params.step_id) {
-            const selected = assertStepExecutionAllowed(current.plan, params.step_id, { currentRunAuthorized: true, implementationAllowed: true, actorId: actor, requestId: params.request_id! });
+            const selected = assertStepExecutionAllowed(plan, params.step_id, { currentRunAuthorized: true, implementationAllowed: true, actorId: actor, requestId: params.request_id! });
             require(selected.kind !== "handover", "Handoff is host-owned");
             require(!requireStarted || selected.status === "in_progress", "Assignment start checkpoint is missing");
-            checkpointed = selected.status === "in_progress";
+            if ((plan.execution?.execution_mode ?? "sequential") === "sequential") require(!plan.steps.slice(0, plan.steps.indexOf(selected))
+              .some(s => plan.execution!.selected_step_ids.includes(s.id) && s.status !== "completed"), "Sequential mode requires plan order");
           } else {
-            const review = current.plan.plan_reviews?.find(r => r.request_id === params.request_id);
-            require(current.plan.lifecycle !== "finished" && review?.state === "requested" && !review.task_id && review.revision === snapshot.plan.revision,
+            const review = plan.plan_reviews?.find(r => r.request_id === params.request_id);
+            require(plan.lifecycle !== "finished" && review?.state === "requested" && !review.task_id && review.revision === snapshot.plan.revision,
               "An explicit independent-review request is required; inspect existing reviewers instead of replacing them");
-            require(!current.plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "Handover is unresolved");
+            require(!plan.handovers?.some(h => ["requested", "prepared", "blocked"].includes(h.state)), "Handover is unresolved");
           }
-          require(scope(current.plan) === fingerprint, "Assignment requirements changed");
-          if (!requireStarted) assertAgentIdle(ctx);
-          revision = current.plan.revision;
+          require(scope(plan) === fingerprint, "Assignment requirements changed");
+          handler.assertHistory(history());
+          require(!plan.steps.some(s => s.id !== params.step_id && s.status === "in_progress" && !handler.ownsStep(dispatchCorrelation, s.id, createHash("sha256").update(stepFingerprint(s).scope).digest("hex"), history())),
+            "Another in-progress step has no known live assignment; reconcile its writers first");
+        };
+        const withPermission = <T>(work: () => Promise<T>) => withLock(snapshot.path, async () => {
+          guard();
+          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
+          require(!current.refresh_required, "Plan identity changed or needs refresh");
+          validateScope(current.plan, true); revision = current.plan.revision;
           return work();
         });
-        let stateText: string | undefined;
         const statePath = path.extname(snapshot.path).toLowerCase() === ".md" ? markdownStatePath(snapshot.path) : undefined;
-        const readState = () => statePath && fs.existsSync(statePath) ? fs.readFileSync(statePath, "utf8") : undefined;
-        await withPermission(async () => { stateText = readState(); }, false);
+        const stamp = () => createHash("sha256").update(fs.readFileSync(snapshot.path)).update("\0")
+          .update(statePath && fs.existsSync(statePath) ? fs.readFileSync(statePath) : "").digest("hex");
+        const initialStamp = stamp();
         require((step && step.kind !== "review") || !params.write_paths?.length, "Reviews have no write permissions");
         const cwd = canonicalPath(ctx.cwd), files = (values: string[] = []) => values.map(p => canonicalPath(path.resolve(cwd, p)));
         const sessionDir = path.join(ctx.sessionManager.getSessionDir(), "hyperion-agents", createHash("sha256").update(actor).digest("hex"));
         const paths = { cwd, readPaths: files(params.read_paths), writePaths: files(params.write_paths), sessionDir,
           protectedPaths: [snapshot.path, markdownStatePath(snapshot.path), notesPath(snapshot.path), snapshot.path + ".lockdir",
             path.join(path.dirname(snapshot.path), ".plan-history"), path.join(path.dirname(snapshot.path), ".hyperion-dispatch"), ctx.sessionManager.getSessionDir()] };
-        preflightAssignment(paths); // Reject invalid dispatch before model setup or any plan write.
-        const { model, runtime } = await childModelProxy(ctx, sessionDir);
-        guard();
-        if (params.step_id && !checkpointed) {
-          const startedPlan = await recordPlanProgress(snapshot, actor, snapshot.plan.revision, {
-            execution_request_id: params.request_id, step_id: params.step_id, status: "in_progress",
-            note: `Dispatch preflight passed; starting assignment ${params.assignment_id}.`,
-          }, () => {
-            guard(); preflightAssignment(paths);
-            require(createHash("sha256").update(fs.readFileSync(snapshot.path, "utf8")).digest("hex") === snapshot.source_digest &&
-              readState() === stateText,
-              "Plan changed during dispatch preflight; inspect the current requirements");
-          }, ctx);
-          revision = startedPlan.plan.revision; checkpointed = true;
-        }
-        await withPermission(async () => {});
+        preflightAssignment(paths);
+        const coordinatorFile = ctx.sessionManager.getSessionFile();
+        require(coordinatorFile && fs.existsSync(coordinatorFile), "Assignments require an already-persisted coordinator Pi session; enable session storage before dispatch.");
         const requirements = step ? { title: step.title, description: step.description, done_when: step.done_when, checks: step.checks, comments: step.comments } :
           { title: snapshot.plan.title, revision: snapshot.plan.revision, steps: snapshot.plan.steps.map(s => ({ id: s.id, title: s.title, description: s.description, done_when: s.done_when, checks: s.checks, comments: s.comments })) };
-        const result = await handler.run({ id: params.assignment_id, ...paths, instructions: params.instructions,
-          context: JSON.stringify({ requirements, explicit_context: params.context ?? "" }),
-          effort: step?.reasoning_effort ?? "inherit", model, modelRuntime: runtime, thinkingLevel: pi.getThinkingLevel(), signal, withPermission,
-          history, record: save,
-          onEvent: event => { if (started === epoch) observer?.event(ctx, params.assignment_id, event); },
+        const admission = { id: params.assignment_id, ...paths, correlation: dispatchCorrelation, instructions: params.instructions,
+          context: JSON.stringify({ requirements, explicit_context: params.context ?? "" }), signal, history };
+        let joined: Promise<AgentRecord> | undefined, repeated: AgentRecord | undefined;
+        await withLock(snapshot.path, async () => {
+          guard(); joined = handler.join(params.assignment_id);
+          repeated = inspectAssignment(history(), params.assignment_id);
+          if (joined || repeated) return; // Never await a child's lock-taking lifecycle while holding this lock.
+          const before = stamp();
+          require(before === initialStamp || handler.knownStamp(dispatchCorrelation, before), "Plan changed during dispatch preflight; inspect the current requirements");
+          const current = await loadPlanSnapshot(snapshot.path, { followRedirects: false });
+          require(!current.refresh_required, "Plan identity changed or needs refresh"); validateScope(current.plan, false);
+          reservation = handler.reserve(admission, !step || step.kind === "review" || (current.plan.execution?.execution_mode ?? "sequential") === "sequential", before);
+        });
+        if (joined || repeated) {
+          const result = joined ? await joined : repeated!;
+          const details = inspectAssignment(history(), params.assignment_id) ?? result;
+          return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+        }
+        const { model, runtime } = await childModelProxy(ctx, sessionDir);
+        let beforeStart = "";
+        const startedPlan = await mutatePlan(snapshot.path, actor, plan => {
+          validateScope(plan, false); reservation!.assertCurrent(beforeStart);
+          if (!params.step_id || plan.steps.find(s => s.id === params.step_id)!.status === "in_progress") return [plan, false];
+          return checkpoint(plan, plan.revision, params.step_id, "in_progress", `Dispatch preflight passed; starting assignment ${params.assignment_id}.`);
+        }, { expectedPlanId: snapshot.plan.plan_id, beforeWrite: () => {
+          guard(); beforeStart = stamp(); reservation!.assertCurrent(beforeStart);
+        }, afterWrite: () => { reservation!.advance(beforeStart, stamp()); } });
+        revision = startedPlan.plan.revision; checkpointed = !!params.step_id;
+        const result = await reservation!.launch({ ...admission,
+          effort: step?.reasoning_effort ?? "inherit", model, modelRuntime: runtime, thinkingLevel: pi.getThinkingLevel(), withPermission,
+          record: save, onEvent: event => { if (started === epoch) observer?.event(ctx, params.assignment_id, event); },
         });
         const details = { ...result, ...correlation, checkpointed, plan_revision: revision };
         return { content: [{ type: "text", text: JSON.stringify(details) }], details };
@@ -330,6 +391,9 @@ export function registerAgentTool(pi: ExtensionAPI, observer?: {
             workspace: canonicalPath(ctx.cwd), ...(error instanceof AssignmentPreflightError && error.path ? { path: error.path } : {}) }, ...correlation, title };
         if (started === epoch && actor === ctx.sessionManager.getSessionId()) save(details);
         return { content: [{ type: "text", text: JSON.stringify(details) }], details, isError: true };
+      } finally {
+        signal?.removeEventListener("abort", onAbort); reservation?.release();
+        if (signal?.aborted) await handler.stop();
       }
     },
   });
@@ -665,7 +729,7 @@ export async function handleScreenAction(
       if (state.mutationBlocker) throw new Error(state.mutationBlocker);
       result = await applyRequestToDisk(state, request, ctx, assertCurrent, assertSession);
     } catch (error) {
-      sendIntent(`The user explicitly requests Run for these step IDs only: ${action.selectedStepIds.join(", ")}. This includes the submitted draft edits and routine plan reconciliation, including reopening this plan if finished. First drain/reconcile any existing execution; then reconcile the requested scope and apply canonical authorization using the shared core. Keep the request ID if not already used; never rewrite a prior receipt. Missing real unselected prerequisites remain outside authority. Selected reviews permit one fresh reviewer; findings do not authorize fixes. Prefer host delegation; optional hyperion_agent runs one explicitly scoped foreground assignment. Respect current session restrictions and sequential mode. Handoff is host-owned and must satisfy shared ownership transfer; Hyperion does not launch it.`, request, errorMessage(error));
+      sendIntent(`The user explicitly requests Run for these step IDs only: ${action.selectedStepIds.join(", ")}. This includes the submitted draft edits and routine plan reconciliation, including reopening this plan if finished. First drain/reconcile any existing execution; then reconcile the requested scope and apply canonical authorization using the shared core. Keep the request ID if not already used; never rewrite a prior receipt. Missing real unselected prerequisites remain outside authority. Selected reviews permit one fresh reviewer; findings do not authorize fixes. Prefer host delegation; optional hyperion_agent runs one explicitly scoped foreground assignment per call, bounded to two same-request children. Respect current session restrictions and sequential mode. Handoff is host-owned and must satisfy shared ownership transfer; Hyperion does not launch it.`, request, errorMessage(error));
       return "close";
     }
     const selected = result.plan.execution?.selected_step_ids ?? action.selectedStepIds;
@@ -676,7 +740,7 @@ export async function handleScreenAction(
     sendSavedRequest(userMessage(result.path, [
       `The user explicitly authorized Run for these step IDs only: ${selected.join(", ")}.`,
       `The accepted plan request ID is ${request.request_id}; current canonical revision is ${result.plan.revision}. Do not apply this request a second time.`,
-      `Execution mode: ${result.plan.execution?.execution_mode ?? "sequential"}. Keep coordination here. Respect current user restrictions on worker sessions. Prefer an available host delegate; optional hyperion_agent runs one foreground assignment, not a wave. Explicit sequential mode preserves plan order. Use current-session sequential fallback when delegation is unavailable or unsafe. Never expand scope or resume from stored approval.`,
+      `Execution mode: ${result.plan.execution?.execution_mode ?? "sequential"}. Keep coordination here. Respect current user restrictions on worker sessions. Prefer an available host delegate; optional hyperion_agent runs one foreground assignment per call with at most two known same-request children, not a scheduled wave. Explicit sequential mode preserves plan order. Use current-session sequential fallback when delegation is unavailable or unsafe. Never expand scope or resume from stored approval.`,
       "For hyperion_agent delegation, call run directly with the current request ID, selected step ID, explicit context and exact files inside this coordinator's workspace. It preflights and checkpoints the start; do not separately checkpoint it first. A structured rejected result means no native session launched: use its reason/workspace/path without extra inspect or launch attempts. Inspect results and verify acceptance before a separate completion checkpoint; returned reports are not completion. Current-session work and other host delegates still require a start checkpoint. No nested agents or automatic refill/retry. Unknown settlement holds reuse. Handoff stays host-owned and must satisfy shared readiness/ownership transfer; without that capability leave the checkpoint incomplete. Never manually complete it or launch a transfer merely to test this plan.",
       ...(selected.some(id => result.plan.steps.find(step => step.id === id)?.kind === "review") ? ["For selected code-review steps only, drain earlier writers, checkpoint in_progress and use an explicitly authorized external fresh reviewer. Supply requirements and identified code, not parent history. Inspect the report and record its identity, revision, coverage and limitations through shared checkpoints. Hyperion does not certify tests or review artifacts; unavailable independent checks remain incomplete. Findings do not authorize fixes."] : []),
       `For current-session work or other host delegates: ${CHECKPOINT_INSTRUCTIONS}`,
