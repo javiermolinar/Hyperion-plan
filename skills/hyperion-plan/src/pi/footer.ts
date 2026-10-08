@@ -40,7 +40,7 @@ export class PlanFooter {
       blockers.push(`${clean(waiting.id)}: waiting for ${prerequisites(waiting).filter(id => byId.get(id)?.status !== "completed").map(clean).join(", ")}`);
     }
     for (const review of plan.plan_reviews ?? []) if (review.state === "blocked") blockers.push(clean(review.note ?? "Independent plan review blocked"));
-    for (const handover of plan.handovers ?? []) if (handover.state === "blocked") blockers.push(clean(handover.note ?? "Handover blocked"));
+    for (const handover of plan.handovers ?? []) if (handover.state === "blocked" && plan.steps.some(s => s.id === handover.step_id && s.kind === "handover")) blockers.push(clean(handover.note ?? "Handover blocked"));
     if (this.agents.unknown) blockers.push(`${this.agents.unknown} assignment${this.agents.unknown === 1 ? " has" : "s have"} unknown settlement; inspect Agents`);
     // Equal-weight completed steps, not an estimate of time or effort remaining.
     const cells = width >= 80 ? 10 : width >= 48 ? 6 : 4;

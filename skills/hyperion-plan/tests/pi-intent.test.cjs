@@ -63,7 +63,6 @@ for (const [name, prepare] of [
   ['saved blocker', p => { p.steps[0].blocked_by = 'Awaiting fresh review evidence'; return p; }],
   ['missing prerequisite', p => { p.steps[0].depends_on = ['b']; p.steps.reverse(); return p; }],
   ['finished plan', p => core.setLifecycle(p, p.revision, 'finished')[0]],
-  ['different owner', p => { p.execution_owner = 'other-owner'; return p; }],
   ['active independent review', p => core.applyRequest(p, { plan_id: p.plan_id, base_revision: p.revision,
     request_id: 'old-review', intent: 'review', review_mode: 'independent', target_step_ids: ['a'], operations: [] })[0]],
 ]) test(`Run with ${name} reaches the coordinator without fabricating canonical readiness`, async t => {
@@ -77,6 +76,21 @@ for (const [name, prepare] of [
   assert.match(h.messages[0].content, /current user intent/);
   assert.match(h.messages[0].content, /do not ask for another Run/);
   assert.match(h.messages[0].content, /Missing real unselected prerequisites remain outside authority/);
+});
+
+test('Run from a different session retires a legacy owner and saves the actual selected scope', async t => {
+  const h = await fixture(t, { keys: [' ', '\r'], prepare: p => {
+    p.execution_owner = 'other-owner';
+    return p;
+  } });
+  await h.open();
+  const plan = (await h.read()).plan;
+  assert.equal(plan.execution_owner, undefined);
+  assert.deepEqual(plan.execution.selected_step_ids, ['a']);
+  assert.equal(h.messages.length, 1);
+  assert.match(h.messages[0].content, /already validated and saved/);
+  assert.match(h.messages[0].content, /Pi plans are not owned by a coordinator session/);
+  assert.doesNotMatch(h.messages[0].content, /direct the user to it|actual owning task ID/);
 });
 
 test('busy Run queues once without replacing active canonical authority', async t => {
@@ -247,7 +261,8 @@ for (const mode of ['new','legacy','sequential','auto','parallel']) test(`native
   assert.equal((await h.read()).plan.execution.execution_mode,mode === 'new' ? 'auto' : mode === 'legacy' ? 'sequential' : mode);
   assert.equal((await h.read()).plan.steps[0].status,'pending');
   assert.ok(h.messages[0].includes(core.CHECKPOINT_INSTRUCTIONS));
-  assert.ok(h.messages[0].includes(core.OWNERSHIP_INSTRUCTIONS));
+  assert.match(h.messages[0], /Ownership belongs only to agent assignments in their coordinator\/request cohort/);
+  assert.ok(!h.messages[0].includes(core.OWNERSHIP_INSTRUCTIONS));
   assert.match(h.messages[0],/Explicit sequential mode preserves plan order/);
   assert.match(h.messages[0],/hyperion_agent runs one foreground assignment/); assert.match(h.messages[0],/current user restrictions on worker sessions/);
   assert.match(h.messages[0],/verify acceptance before a separate completion checkpoint/);

@@ -13,7 +13,7 @@ Both hosts use the same Markdown plan, revision checks, and execution rules. Edi
 Paste into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.5.0/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.5.1/skills/hyperion-plan
 ```
 
 Requires **Node.js 22+** and the **Visualize** skill for interactive cards. Invoke with `$hyperion-plan`.
@@ -53,7 +53,7 @@ Ask to finish or reopen a plan. History stays intact; reopening does not approve
 
 **Codex** uses Visualize cards with step selection, drag reordering, Ask Codex, and effort controls. Reviews and fresh-context handovers are agent-mediated.
 
-**Pi** uses a native overlay and a compact status strip. Describe plan changes in chat. Press **A** to inspect Hyperion delegates, **B** to return, and **Esc** to close. Its optional delegate runs one foreground assignment per call, with up to two eligible children in one authorized Run request. Exact file claims prevent write conflicts; sequential mode stays sequential. The coordinator verifies results before completion. Read-only inspection can recover settled child reports from Pi sessions, but never clears unknown-writer fences or replays work. Independent reviews prefer an explicitly authorized fresh external reviewer through an available host delegation facility, with the read-only Hyperion delegate as the fallback. External reports must be brought back by the coordinator; the fallback cannot run shell commands or tests. Pi has no parallel scheduler or handoff launcher. Session files are history, not live handles: sleep, network loss and process death do not guarantee continuation.
+**Pi** uses a native overlay and a compact status strip. Describe plan changes in chat. Press **A** to inspect Hyperion delegates, **B** to return, and **Esc** to close. Its optional delegate runs one foreground assignment per call, with up to two eligible children in one authorized Run request. Exact file claims prevent write conflicts; sequential mode stays sequential. The coordinator verifies results before completion. Read-only inspection can recover settled child reports from Pi sessions, but never clears unknown-writer fences or replays work. Independent reviews prefer an explicitly authorized fresh external reviewer through an available host delegation facility, with the read-only Hyperion delegate as the fallback. External reports must be brought back by the coordinator; the fallback cannot run shell commands or tests. Pi has no parallel scheduler or handoff launcher. Ordinary sessions do not own plans; ownership is scoped to active agent assignments and their file claims, not persistent coordinator transfers. Session files are history, not live handles: sleep, network loss and process death do not guarantee continuation.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/hyperion-plan-dark.png">

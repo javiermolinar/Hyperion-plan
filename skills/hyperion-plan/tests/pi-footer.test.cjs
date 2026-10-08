@@ -119,6 +119,9 @@ test('blockers include reasons, dependency stalls, blocked reviews and handovers
   text = footer.render(120, theme).join('\n'); assert.match(text, /waiting for 02/);
   footer.plan.plan_reviews = [{ state: 'blocked', note: 'Reviewer unavailable' }];
   footer.plan.handovers = [{ state: 'blocked', note: 'Destination unavailable' }];
+  assert.match(footer.render(120, theme).join('\n'), /2 blockers/, 'legacy coordinator handshakes are not execution blockers');
+  footer.plan.steps.push({ id: 'h', kind: 'handover', title: 'Explicit boundary', status: 'pending' });
+  footer.plan.handovers[0].step_id = 'h';
   assert.match(footer.render(120, theme).join('\n'), /3 blockers/);
 });
 

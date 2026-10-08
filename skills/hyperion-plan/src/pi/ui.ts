@@ -74,7 +74,6 @@ export class PlanScreenState {
     this.focusedStepId = snapshot.plan.steps[0]?.id;
     if (readOnly) this.notice = "Pi is busy. Run and plan requests will be queued for the next turn.";
     else if (snapshot.refresh_required) this.notice = "Markdown changed. The agent will reconcile it when you submit a request.";
-    else if (this.ownerMismatch) this.notice = `Plan is owned by ${snapshot.plan.execution_owner}; this Pi session cannot write it.`;
     else if (snapshot.plan.execution?.selected_step_ids.length)
       this.notice = "A saved selection exists, but it is not resumed. Select work and press Run explicitly.";
   }
@@ -88,9 +87,6 @@ export class PlanScreenState {
   get dirty(): boolean { return this.draftOperations.length > 0; }
   get staleDraft(): boolean {
     return this.draftConflict || (this.dirty && this.draftBaseRevision !== this.plan.revision);
-  }
-  get ownerMismatch(): boolean {
-    return !!this.plan.execution_owner && this.plan.execution_owner !== this.actorId;
   }
   get focusedStep(): Step | undefined {
     const plan = this.displayPlan;

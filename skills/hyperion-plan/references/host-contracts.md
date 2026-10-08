@@ -141,6 +141,10 @@ Later selected steps must verify the dependency direction, exact registered tool
 
 The original architecture checkpoint was documentation-only. Subsequent production checkpoints record implemented boundaries and focused regression evidence. The final inventory records the file-budget deviation rather than claiming ten files. Fixture checks do not establish installed-session dogfooding or independent review; their actual results and limitations belong in separate plan checkpoints.
 
+## Current Pi ownership scope
+
+Pi coordinator sessions do not own plans. This supersedes the historical Pi source-owner fences and transfer requirement above: `execution_owner` and `hyperion.handover*` tags are history, not normal-work permission gates. A successful explicit Pi mutation removes the saved owner and cancels unfinished ad-hoc coordinator handshakes with a retirement note, without claiming transfer or writer settlement. Read-only inspection does not migrate data. Assignment-local coordinator/request correlation, file claims, actual unknown-writer/runtime holds and explicit handover checkpoints remain enforced. Shared service/CLI/Codex ownership defaults are unchanged; only the Pi mutation boundary disables the persistent task-owner check.
+
 ## Ownership of responsibilities
 
 | Responsibility | Owner |

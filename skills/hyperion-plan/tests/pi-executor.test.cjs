@@ -233,15 +233,15 @@ for (const action of ['submit', 'checkpoint', 'plan-review']) test(`review fix F
   } finally { resume(); await pending; lockfile.lock = original; }
 });
 
-test('historical source owner fence uses all entries, even when the active branch hides its tag', async t => {
+test('historical source tags never fence ordinary Pi tools or user bash', async t => {
   const f = fixture(t, 'code'), handlers = new Map();
   const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.js')))).default;
   extension({ on(name, handler) { const all = handlers.get(name) ?? []; all.push(handler); handlers.set(name, all); return () => {}; }, registerTool() {}, registerCommand() {}, registerMessageRenderer() {} });
   const tag = { type: 'custom', customType: 'hyperion.handover-source', data: { plan_path: f.file, plan_id: f.plan.plan_id } };
   const ctx = { sessionManager: { getSessionId: () => 'old-source', getEntries: () => [tag], getBranch: () => [] } };
-  const results = await Promise.all(handlers.get('tool_call').map(h => h({}, ctx)));
-  assert.ok(results.some(r => r?.block && /does not own/.test(r.reason)));
-  await assert.rejects(handlers.get('user_bash')[0]({}, ctx), /does not own/);
+  const results = await Promise.all((handlers.get('tool_call') ?? []).map(h => h({}, ctx)));
+  assert.ok(results.every(r => !r?.block));
+  for (const handler of handlers.get('user_bash') ?? []) await handler({}, ctx);
 });
 test('production boundaries separate footer presentation with no reverse core or handler plan imports', () => {
   assert.deepEqual(fs.readdirSync(path.join(root, 'src/pi')).sort(), ['context.ts', 'executor.ts', 'extension.ts', 'footer.ts', 'subagents.ts', 'ui.ts']);
@@ -418,7 +418,7 @@ test("edits use exact revision checks, durable retry receipts and no execution a
   await assert.rejects(h.call({ action: "edit", path: h.planPath, operations: request.operations }), /plan_id and base_revision/);
 });
 
-test("core rejects invalid edits and preserves prerequisites and ownership", async t => {
+test("Pi rejects invalid edits but a stale coordinator owner cannot block ordinary edits", async t => {
   const h = await harness(t);
   let snapshot = await h.read();
   const before = fs.readFileSync(h.planPath);
@@ -429,8 +429,78 @@ test("core rejects invalid edits and preserves prerequisites and ownership", asy
   }
   snapshot.plan.execution_owner = "someone-else";
   core.saveMarkdown(h.planPath, snapshot.plan);
-  await assert.rejects(h.call(mutation(await h.read())), /belongs to task someone-else/);
-  assert.equal((await h.read()).plan.steps[0].title, "First");
+  await h.call(mutation(await h.read()));
+  assert.equal((await h.read()).plan.steps[0].title, "Renamed");
+  assert.equal((await h.read()).plan.execution_owner, undefined);
+});
+
+for (const blocked of [false, true]) test(`ordinary Pi Run retires a ${blocked ? 'blocked' : 'prepared'} legacy handoff without transferring ownership`, async t => {
+  const h = await harness(t);
+  let plan = { ...h.plan, execution_owner: 'old-source' };
+  [plan] = core.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision,
+    request_id: 'legacy-handoff', intent: 'handover', operations: [] });
+  [plan] = core.updateHandover(plan, plan.revision, { request_id: 'legacy-handoff', state: 'prepared',
+    destination_task_id: 'old-destination', brief_path: '/historical/brief.md', summary: 'Source finished',
+    next_action: 'Wait for transfer', code_state: 'Historical checkout' }, 'old-source');
+  if (blocked) [plan] = core.updateHandover(plan, plan.revision,
+    { request_id: 'legacy-handoff', state: 'blocked', note: 'Waiting for readiness message' }, 'old-source');
+  core.saveMarkdown(h.planPath, plan);
+  const files = [h.planPath, core.markdownStatePath(h.planPath)];
+  const before = files.map(f => fs.readFileSync(f));
+  await h.call({ action: 'show', path: h.planPath });
+  assert.deepEqual(files.map(f => fs.readFileSync(f)), before, 'inspection must not retire bookkeeping');
+  const request = { plan_id: plan.plan_id, base_revision: plan.revision, request_id: 'current-user-run',
+    intent: 'implement', operations: [], selected_step_ids: ['a'], execution_mode: 'sequential' };
+  await assert.rejects(h.call({ action: 'submit', path: h.planPath,
+    request: JSON.stringify({ ...request, base_revision: plan.revision - 1 }) }), /Stale plan/);
+  assert.deepEqual(files.map(f => fs.readFileSync(f)), before, 'failed admission leaves the entire history intact');
+  const result = await h.call({ action: 'submit', path: h.planPath, request: JSON.stringify(request) });
+  assert.equal(result.details.plan.execution_owner, undefined);
+  assert.equal(result.details.revision, plan.revision + 1);
+  assert.deepEqual(result.details.plan.execution.selected_step_ids, ['a']);
+  assert.equal(result.details.plan.steps[0].status, 'pending', 'request acceptance never starts work');
+  const event = result.details.plan.handovers[0], prior = plan.handovers[0];
+  assert.equal(event.state, 'cancelled');
+  assert.match(event.note, /Retired legacy Pi coordinator ownership handshake/);
+  for (const key of ['source_task_id', 'destination_task_id', 'brief_path', 'context_digest']) assert.equal(event[key], prior[key]);
+  assert.equal(event.transferred_at, undefined);
+  const retry = await h.call({ action: 'submit', path: h.planPath, request: JSON.stringify(request) });
+  assert.equal(retry.details.changed, false);
+  assert.equal(retry.details.revision, result.details.revision);
+  h.setSession('another-resumed-session');
+  await h.call(mutation(await h.read()));
+  assert.equal((await h.read()).plan.steps[0].title, 'Renamed');
+});
+
+test('retiring a legacy handoff never clears unknown assignment writers', async t => {
+  const h = await harness(t);
+  let [plan] = core.applyRequest(h.plan, { plan_id: h.plan.plan_id, base_revision: h.plan.revision,
+    request_id: 'legacy-handoff', intent: 'handover', operations: [] });
+  plan.execution_owner = 'old-source';
+  core.saveMarkdown(h.planPath, plan);
+  h.entries.push({ type: 'custom', customType: 'hyperion.agent', data: {
+    id: 'unknown-worker', state: 'unknown', settled: false, native_id: 'native', transcript_path: '/missing', context_digest: 'historical',
+  } });
+  const before = fs.readFileSync(h.planPath);
+  await assert.rejects(h.call(mutation(await h.read())), /unknown writers/);
+  assert.deepEqual(fs.readFileSync(h.planPath), before);
+});
+
+test('explicit handover checkpoints are not silently retired', async t => {
+  const h = await harness(t);
+  let plan = { ...h.plan, title: 'Explicit boundary', steps: [
+    { id: 'pre', title: 'Done', status: 'completed' }, { id: 'handoff', title: 'Boundary', kind: 'handover', status: 'pending' },
+    { id: 'after', title: 'Later work', status: 'pending' },
+  ] };
+  [plan] = core.applyRequest(plan, { plan_id: plan.plan_id, base_revision: plan.revision, request_id: 'boundary',
+    intent: 'handover', target_step_ids: ['handoff'], operations: [] });
+  plan.execution_owner = 'old-source';
+  core.saveMarkdown(h.planPath, plan);
+  const before = fs.readFileSync(h.planPath);
+  await assert.rejects(h.call({ action: 'submit', path: h.planPath, request: JSON.stringify({
+    plan_id: plan.plan_id, base_revision: plan.revision, request_id: 'later', intent: 'implement', operations: [], selected_step_ids: ['after'],
+  }) }), /handover/);
+  assert.deepEqual(fs.readFileSync(h.planPath), before);
 });
 
 test("scope edits preserve partial progress while revoking changed approval", async t => {

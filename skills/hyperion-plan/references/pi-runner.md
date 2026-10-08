@@ -27,9 +27,9 @@ Pre-launch failures return `state: "rejected"`, `isError: true`, `settled: true`
 
 ## Bounded fork/join
 
-The coordinator chooses eligible selected steps; the handler does not choose work or fill capacity. Canonical file claims reserve IDs and scope before asynchronous launch. Writable files are also readable claims. Read/read overlap is allowed; write/write, write/read, duplicate active step ownership, capacity overflow and foreign live cohorts reject. Sequential mode and reviews require exclusive admission. Prerequisites, selected review/handover barriers, ownership and unknown historical writers still constrain admission.
+The coordinator chooses eligible selected steps; the handler does not choose work or fill capacity. Canonical file claims reserve IDs and scope before asynchronous launch. Writable files are also readable claims. Read/read overlap is allowed; write/write, write/read, duplicate active step ownership, capacity overflow and foreign live cohorts reject. Sequential mode and reviews require exclusive admission. Prerequisites, selected review/handover barriers, assignment-local ownership and unknown historical writers still constrain admission. The plan has no persistent Pi coordinator owner: a stale `execution_owner` cannot block ordinary work or a new, currently authorized assignment. Actual coordinator/request correlation still prevents adopting foreign children.
 
-Concurrent starts serialize reservation and canonical checkpoints under the existing plan lock. A known same-request sibling may advance the revision; changed requirements, request or owner do not qualify for that exception. Call `run` directly for each child; do not write a separate start checkpoint first. In-progress steps are not permission to redispatch uncertain work. Repeated live IDs join the existing attempt; recorded IDs are inspected, never relaunched.
+Concurrent starts serialize reservation and canonical checkpoints under the existing plan lock. A known same-request sibling may advance the revision; changed requirements, request or assignment coordinator do not qualify for that exception. Call `run` directly for each child; do not write a separate start checkpoint first. In-progress steps are not permission to redispatch uncertain work. Repeated live IDs join the existing attempt; recorded IDs are inspected, never relaunched.
 
 Where Codemode is available, use `Promise.allSettled` for the two explicitly authorized calls. A rejected call can leave a peer running: await all call results and inspect every assignment's settlement before integration or completion. Script failure does not undo completed mutations; ending a script cancels outstanding calls, not necessarily their writers synchronously. Never replay an interrupted script to recover results.
 
@@ -51,7 +51,7 @@ Recovered results use `source: "child-session"`, with the original `parent_state
 
 Historical `.hyperion-dispatch` ledgers, handover records, reports, test artifacts and machine-local configuration are retained untouched. Bounded executor preflight reads lifecycle fields only; it does not recertify artifacts. Active/uncertain or malformed records, unreconciled waves and unfinished transfers hold new execution. Read-only plan inspection remains available.
 
-**Before upgrading/reloading:** settle and reconcile old managed work using the old version/owning host. Do not delete history, fabricate settlement or assume package replacement stopped old writers. If the old host is unavailable, record the limitation; do not launch replacement work. Transferred-source owner fences remain effective across branch changes.
+**Before upgrading/reloading:** settle and reconcile old managed work using the old version/owning host. Do not delete history, fabricate settlement or assume package replacement stopped old writers. If the old host is unavailable, record the limitation; do not launch replacement work. Legacy transferred-source tags do not fence ordinary tools, user bash or plan access. They do not clear actual assignment/runtime fences either.
 
 ## Removed APIs
 

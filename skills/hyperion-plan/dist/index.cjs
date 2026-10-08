@@ -4365,7 +4365,7 @@ async function mutatePlan(input, actorId, mutation, options = {}) {
       options.expectedPlanId === void 0 || current2.plan.plan_id === options.expectedPlanId,
       "The selected plan was replaced."
     );
-    assertExecutionOwner(current2.plan, actorId);
+    if (options.checkExecutionOwner !== false) assertExecutionOwner(current2.plan, actorId);
     if (current2.refresh_required) current2 = readSnapshot(planPath, true);
     const [candidate, changed] = mutation(current2.plan);
     const plan = validate(candidate);

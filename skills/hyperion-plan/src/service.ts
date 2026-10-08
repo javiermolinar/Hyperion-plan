@@ -106,7 +106,7 @@ export async function mutatePlan(
   input: string,
   actorId: string | undefined,
   mutation: PlanMutation,
-  options: { cwd?: string; beforeWrite?: () => void; expectedPlanId?: string; afterWrite?: () => void } = {},
+  options: { cwd?: string; beforeWrite?: () => void; expectedPlanId?: string; afterWrite?: () => void; checkExecutionOwner?: boolean } = {},
 ): Promise<PlanMutationResult> {
   const planPath = selectedPlanPath(input, options.cwd);
   require(fs.existsSync(planPath), `Plan does not exist: ${planPath}`);
@@ -119,7 +119,7 @@ export async function mutatePlan(
     // only in the transform that runs after external Markdown is refreshed.
     require(options.expectedPlanId === undefined || current.plan.plan_id === options.expectedPlanId,
       "The selected plan was replaced.");
-    assertExecutionOwner(current.plan, actorId);
+    if (options.checkExecutionOwner !== false) assertExecutionOwner(current.plan, actorId);
     if (current.refresh_required) current = readSnapshot(planPath, true);
     const [candidate, changed] = mutation(current.plan);
     const plan = validate(candidate);

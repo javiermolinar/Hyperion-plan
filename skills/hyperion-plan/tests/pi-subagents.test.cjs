@@ -750,7 +750,7 @@ for (const repeated of [false, true]) test('native simultaneous ' + (repeated ? 
   assert.equal(f.requests.length, 1); assert.equal((await f.core.loadPlanSnapshot(f.file)).plan.revision, f.plan.revision + 1);
 });
 
-for (const fault of ['legacy', 'orphan-step', 'dependency', 'review-barrier', 'sequential-order', 'omitted-mode-order', 'request', 'paused', 'cancelled', 'owner']) test('native ' + fault + ' rejects unknown or unauthorized work', async t => {
+for (const fault of ['legacy', 'orphan-step', 'dependency', 'review-barrier', 'sequential-order', 'omitted-mode-order', 'request', 'paused', 'cancelled']) test('native ' + fault + ' rejects unknown or unauthorized work', async t => {
   const steps = fault === 'review-barrier' ? [{ id: 'work', title: 'First' }, { id: 'peer', title: 'Review', kind: 'review', depends_on: ['work'], checks: ['Inspect snapshot'] }, { id: 'third', title: 'Beyond' }]
     : [{ id: 'work', title: 'First' }, { id: 'peer', title: 'Second', ...(fault === 'dependency' ? { depends_on: ['work'] } : {}) }, { id: 'third', title: 'Third' }];
   const f = await cohortFixture(t, () => ({ text: 'Should not launch.' }), { steps,
@@ -761,7 +761,6 @@ for (const fault of ['legacy', 'orphan-step', 'dependency', 'review-barrier', 's
   if (fault === 'review-barrier') args = cohortArgs(f, 'third');
   if (fault === 'request') args.request_id = 'stale-run';
   if (fault === 'paused' || fault === 'cancelled') plan = f.core.checkpoint(plan, plan.revision, undefined, undefined, undefined, undefined, fault)[0];
-  if (fault === 'owner') plan = { ...plan, execution_owner: 'other-owner' };
   if (plan !== f.plan) f.core.saveMarkdown(f.file, plan);
   const before = [f.file, f.core.markdownStatePath(f.file)].map(p => fs.readFileSync(p, 'utf8'));
   const result = (await f.call(args)).details;
@@ -1033,6 +1032,17 @@ test('native dispatch cancellation preserves the validated start and repeated ID
   assert.equal(fs.existsSync(path.join(f.dir, 'output.txt')), false);
 });
 
+test('agent ownership is scoped to its actual coordinator/request, not legacy plan ownership', async t => {
+  const f = await nativeToolFixture(t, () => ({ text: 'Scoped result.' }));
+  f.core.saveMarkdown(f.file, { ...f.plan, execution_owner: 'old-session' });
+  const result = (await f.call()).details;
+  assert.equal(result.state, 'succeeded');
+  assert.equal(result.coordinator_id, f.ctx.sessionManager.getSessionId());
+  assert.equal(result.request_id, 'current-run');
+  assert.equal((await f.core.loadPlanSnapshot(f.file)).plan.execution_owner, undefined);
+  assert.equal(f.requests.length, 1);
+});
+
 test('already-started native dispatch preserves the canonical plan', async t => {
   const f = await nativeToolFixture(t);
   const started = f.core.checkpoint(f.plan, f.plan.revision, 'work', 'in_progress', 'Coordinator start')[0];
@@ -1044,7 +1054,7 @@ test('already-started native dispatch preserves the canonical plan', async t => 
   assert.equal(fs.readFileSync(f.file, 'utf8'), before);
 });
 
-for (const fault of ['external', 'missing', 'protected', 'wrong-request', 'unselected', 'owner', 'model', 'paused', 'aborted', 'ephemeral', 'unpersisted']) test(`dispatch ${fault} rejection precedes model setup and start checkpoint`, async t => {
+for (const fault of ['external', 'missing', 'protected', 'wrong-request', 'unselected', 'model', 'paused', 'aborted', 'ephemeral', 'unpersisted']) test(`dispatch ${fault} rejection precedes model setup and start checkpoint`, async t => {
   const f = await nativeToolFixture(t);
   let args = { ...f.params, write_paths: [] }, signal;
   let code = 'dispatch_rejected';
@@ -1053,7 +1063,6 @@ for (const fault of ['external', 'missing', 'protected', 'wrong-request', 'unsel
   if (fault === 'protected') { args.read_paths = ['plan.md']; code = 'protected_path'; }
   if (fault === 'wrong-request') args.request_id = 'not-current';
   if (fault === 'unselected') args.step_id = 'other';
-  if (fault === 'owner') f.core.saveMarkdown(f.file, { ...f.plan, execution_owner: 'another-task' });
   if (fault === 'model') f.ctx.model = undefined;
   if (fault === 'ephemeral') f.ctx.sessionManager.getSessionFile = () => undefined;
   if (fault === 'unpersisted') f.ctx.sessionManager.getSessionFile = () => path.join(f.dir, 'not-yet-persisted.jsonl');
