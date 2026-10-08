@@ -13,7 +13,7 @@ Both hosts use the same Markdown plan, revision checks, and execution rules. Edi
 Paste into a Codex conversation:
 
 ```text
-$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.4.1/skills/hyperion-plan
+$skill-installer install https://github.com/javiermolinar/Hyperion-plan/tree/v1.5.0/skills/hyperion-plan
 ```
 
 Requires **Node.js 22+** and the **Visualize** skill for interactive cards. Invoke with `$hyperion-plan`.
