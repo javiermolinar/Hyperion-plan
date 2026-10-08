@@ -1118,6 +1118,53 @@ test('native review rejects writes before launch, then runs a read-only actual S
   assert.equal(fs.existsSync(path.join(f.dir, 'output.txt')), false);
 });
 
+test('independent plan review uses the read-only SDK fallback and coordinator records the returned identity', async t => {
+  const entered = gate(), finish = gate(); t.after(finish.open);
+  const f = await nativeToolFixture(t, async context => {
+    if (context.messages.at(-1).role !== 'toolResult') return { tool: { name: 'read', arguments: { path: 'input.txt' } } };
+    entered.open(); await finish.promise;
+    return { text: 'Reviewed the captured plan and input; runtime checks unavailable.' };
+  });
+  const independent = f.core.applyRequest(f.plan, { plan_id: f.plan.plan_id, base_revision: f.plan.revision,
+    request_id: 'independent-review', intent: 'review', review_mode: 'independent', target_step_ids: ['work'], operations: [] })[0];
+  f.core.saveMarkdown(f.file, independent);
+  fs.writeFileSync(path.join(f.dir, 'input.txt'), 'captured review input');
+  const args = { ...f.params, request_id: 'independent-review', assignment_id: 'independent-review-plan',
+    instructions: 'Review the captured plan; return findings only.', context: 'Original requirement: bounded execution.',
+    read_paths: ['input.txt'], write_paths: [] };
+  delete args.step_id;
+  const rejected = (await f.call({ ...args, assignment_id: 'independent-review-writes', write_paths: ['output.txt'] })).details;
+  assert.equal(rejected.state, 'rejected'); assert.match(rejected.limitation, /Reviews have no write permissions/);
+  assert.equal(f.requests.length, 0);
+  const running = f.call(args);
+  await entered.promise;
+  const during = (await f.core.loadPlanSnapshot(f.file)).plan;
+  assert.equal(during.revision, independent.revision);
+  assert.equal(during.plan_reviews[0].state, 'requested');
+  assert.equal(during.plan_reviews[0].task_id, undefined, 'foreground gate requires an unassigned canonical request');
+  assert.deepEqual(during.steps.map(s => s.status), ['pending', 'pending']);
+  finish.open(); const reviewed = (await running).details;
+  assert.equal(reviewed.state, 'succeeded'); assert.equal(reviewed.settled, true);
+  assert.equal(reviewed.checkpointed, false);
+  assert.deepEqual(api.getCurrentTools(f.requests[0].messages).map(t => t.name), ['read']);
+  assert.equal((await f.call(args)).details.native_id, reviewed.native_id, 'retry inspects the original reviewer');
+  assert.equal(f.requests.length, 2, 'one reviewer made two provider turns; retry did not launch another');
+  const reportPath = path.join(f.dir, 'plan-review-report.md');
+  fs.writeFileSync(reportPath, reviewed.report); // The coordinator, not the read-only child, preserves the report.
+  const result = await f.tools.get('hyperion_plan').execute('record-review', { action: 'plan-review', path: f.file,
+    plan_id: independent.plan_id, base_revision: reviewed.plan_revision,
+    update: JSON.stringify({ request_id: 'independent-review', state: 'completed', task_id: reviewed.native_id,
+      report_path: reportPath, findings: [], note: 'Coordinator inspected captured-plan report; runtime checks unavailable.' })
+  }, undefined, undefined, f.ctx);
+  const after = result.details.plan;
+  assert.equal(after.plan_reviews[0].state, 'completed');
+  assert.equal(after.plan_reviews[0].task_id, reviewed.native_id);
+  assert.equal(after.plan_reviews[0].revision, independent.revision);
+  assert.equal(after.plan_reviews[0].report_path, reportPath);
+  assert.deepEqual(after.steps.map(s => s.status), ['pending', 'pending'], 'review grants no implementation progress');
+  assert.equal(fs.existsSync(path.join(f.dir, 'output.txt')), false);
+});
+
 test('a rejected ID stays rejected; a fresh authorized Run can dispatch without erasing its history', async t => {
   const f = await nativeToolFixture(t);
   const rejected = await f.call({ ...f.params, read_paths: ['missing.txt'] });

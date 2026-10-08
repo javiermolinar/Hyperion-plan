@@ -211,16 +211,28 @@ async function harness(t, steps = [{ id: 'a', title: 'Selected work', status: 'p
     read: () => core.loadPlanSnapshot(file),
   };
 }
-test('native Run selects a ready code review and delegates only that explicit review capability', async t => {
+for (const deferred of [false, true]) test(`native ${deferred ? 'deferred ' : ''}Run offers host-provided external review with read-only Hyperion fallback`, async t => {
   const h = await harness(t, [
     { id: 'pre', title: 'Completed implementation', status: 'completed' },
     { id: 'a', title: 'Inspect implementation', kind: 'review', status: 'pending', depends_on: ['pre'], checks: ['Inspect actual behavior'] },
   ]);
+  if (deferred) h.setIdle(false);
   await h.open();
   assert.equal(h.messages.length, 1, h.notices.join('\n'));
-  assert.match(h.messages[0], /explicitly authorized external fresh reviewer/);
+  assert.match(h.messages[0], /Prefer an explicitly authorized external fresh reviewer/);
+  assert.match(h.messages[0], /available host delegation facility/);
+  assert.doesNotMatch(h.messages[0], /\b[a-z]+_start_pi\b/, 'review guidance must not name external session tools');
+  assert.match(h.messages[0], /hyperion_agent as the fallback when that path is unavailable and no reviewer has launched/);
+  assert.match(h.messages[0], /External reviewers require an in_progress checkpoint before launch/);
+  assert.match(h.messages[0], /hyperion_agent run preflights and checkpoints its own start/);
+  assert.match(h.messages[0], /write_paths: \[\]/);
+  assert.match(h.messages[0], /not parent history or a suggested verdict/);
+  assert.match(h.messages[0], /do not automatically return results here/);
+  assert.match(h.messages[0], /uncertain launch or settlement never permits switching paths/);
+  assert.match(h.messages[0], /fallback cannot run shell commands or tests/);
   assert.match(h.messages[0], /findings do not authorize fixes/i);
-  assert.deepEqual((await h.read()).plan.execution.selected_step_ids, ['a']);
+  if (deferred) assert.equal((await h.read()).plan.execution, undefined);
+  else assert.deepEqual((await h.read()).plan.execution.selected_step_ids, ['a']);
   assert.equal((await h.read()).plan.steps[1].status, 'pending', 'selection does not fabricate review progress');
 });
 
@@ -246,6 +258,7 @@ for (const mode of ['new','legacy','sequential','auto','parallel']) test(`native
   assert.deepEqual(requirements.map(step => step.id), ['a']);
   assert.equal(requirements[0].title, (await h.read()).plan.steps[0].title);
   assert.doesNotMatch(h.messages[0],/hyperion_wave|hyperion_handover/);
+  assert.doesNotMatch(h.messages[0],/For selected code-review steps only/, 'implementation-only Run does not authorize review');
 });
 
 async function holdLock(file) {
