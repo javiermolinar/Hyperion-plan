@@ -14,7 +14,7 @@ async function harness(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hyperion-awareness-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let tool, command; const entries = [], handlers = new Map();
-  (await import('../dist/hyperion-plan-pi.js')).default({
+  (await import('../dist/hyperion-plan-pi.ts')).default({
     registerTool: value => { if (value.name === 'hyperion_plan') tool = value; },
     registerCommand: (name, value) => { if (name === 'hyperion') command = value; }, registerMessageRenderer() {},
     on(name, fn) { if (!handlers.has(name)) handlers.set(name, []); handlers.get(name).push(fn); return () => {}; },
@@ -451,6 +451,46 @@ test('repository-root Pi manifest exposes the standalone skill and installs only
     'Git installation must use host-provided Pi packages, not duplicate runtimes');
 });
 
+test('real Pi runtime uses host peers even when the package can resolve local copies', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hyperion-host-peers-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const pkg = path.join(dir, 'package');
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const [entry] = manifest.pi.extensions;
+  const target = path.join(pkg, entry);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.join(root, entry), target);
+  fs.copyFileSync(path.join(root, 'package.json'), path.join(pkg, 'package.json'));
+  const nodeModules = path.join(pkg, 'node_modules');
+  const marker = path.join(dir, 'local-peer-loaded');
+  for (const [name, url] of [
+    ['@earendil-works/pi-coding-agent', sdkURL],
+    ...['@earendil-works/pi-tui', 'typebox'].map(name => [name, pathToFileURL(require.resolve(name)).href]),
+  ]) {
+    const peer = path.join(nodeModules, name);
+    fs.mkdirSync(peer, { recursive: true });
+    fs.writeFileSync(path.join(peer, 'package.json'), JSON.stringify({ name, type: 'module', exports: './index.js' }));
+    // Valid exports let Node finish linking the graph. Record evaluation rather than
+    // throwing: a failed native import can fall back to jiti and hide the bypass.
+    fs.writeFileSync(path.join(peer, 'index.js'), `export * from ${JSON.stringify(url)};\nimport { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(marker)}, ${JSON.stringify(`${name}\n`)});\n`);
+  }
+  fs.symlinkSync(path.dirname(require.resolve('proper-lockfile')), path.join(nodeModules, 'proper-lockfile'), 'junction');
+  const agentDir = path.join(dir, 'agent');
+  fs.mkdirSync(agentDir);
+  fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ packages: [pkg] }));
+  const cli = path.join(root, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js');
+  const result = spawnSync(process.execPath, [cli, '--mode', 'rpc', '--no-session'], {
+    cwd: dir, input: '{"id":"startup","type":"get_commands"}\n', encoding: 'utf8', timeout: 15000,
+    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1' },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const reply = result.stdout.trim().split('\n').map(line => JSON.parse(line)).find(event => event.id === 'startup');
+  assert.ok(reply?.success && reply.data.commands.some(command => command.name === 'hyperion'), result.stdout);
+  const loaded = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : '';
+  assert.equal(loaded, '', `Extension evaluated local copies of Pi peers:\n${loaded}`);
+});
+
 for (const [name, packageRoot] of [['standalone skill', root], ['repository root', path.resolve(root, '../..')]])
 test(`real Pi runtime exposes the ${name} package before/after reload and session restore`, { timeout: 30000 }, async t => {
   const { createAgentSession, DefaultPackageManager, DefaultResourceLoader, SessionManager, SettingsManager } = await import(sdkURL);
@@ -473,7 +513,7 @@ test(`real Pi runtime exposes the ${name} package before/after reload and sessio
   const settings = SettingsManager.create(dir, agentDir, { projectTrusted: true });
   const resources = await new DefaultPackageManager({ cwd: dir, agentDir, settingsManager: settings }).resolve();
   assert.deepEqual(resources.extensions.filter(file => file.enabled).map(file => file.path),
-    [path.join(root, 'dist/hyperion-plan-pi.js')]);
+    [path.join(root, 'dist/hyperion-plan-pi.ts')]);
   assert.ok(resources.skills.some(file => file.enabled && file.path === path.join(root, 'SKILL.md')));
   const loader = new DefaultResourceLoader({ cwd: dir, agentDir, settingsManager: settings,
     additionalExtensionPaths: [provider], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });

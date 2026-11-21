@@ -11,7 +11,7 @@
     "hyperion-plan": "dist/plan.cjs"
   },
   "pi": {
-    "extensions": ["./dist/hyperion-plan-pi.js"],
+    "extensions": ["./dist/hyperion-plan-pi.ts"],
     "skills": ["./"]
   },
   "scripts": {

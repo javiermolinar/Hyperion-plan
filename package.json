@@ -22,7 +22,7 @@
   },
   "pi": {
     "extensions": [
-      "./skills/hyperion-plan/dist/hyperion-plan-pi.js"
+      "./skills/hyperion-plan/dist/hyperion-plan-pi.ts"
     ],
     "skills": [
       "./skills/hyperion-plan"

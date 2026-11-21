@@ -28,7 +28,7 @@ async function fixture(t, { steps, idle = true, text = 'Add coverage for cancell
     appendEntry(customType, data) { entries.push({ type: 'custom', customType, data }); },
     sendUserMessage(content, options) { messages.push({ content, options }); },
   };
-  (await import('../dist/hyperion-plan-pi.js')).default(pi);
+  (await import('../dist/hyperion-plan-pi.ts')).default(pi);
   const ctx = { cwd: dir, mode: 'tui', isIdle: () => idle,
     sessionManager: { getSessionId: () => actor, getBranch: () => entries },
     ui: {
@@ -188,7 +188,7 @@ async function harness(t, steps = [{ id: 'a', title: 'Selected work', status: 'p
     appendEntry(customType, data) { branch.push({ type: 'custom', customType, data }); },
     sendUserMessage(content, options) { assert.equal(options?.deliverAs, 'followUp', 'explicit requests survive busy races without steering active work'); messages.push(content); },
   };
-  (await import('../dist/hyperion-plan-pi.js')).default(pi);
+  (await import('../dist/hyperion-plan-pi.ts')).default(pi);
   const theme = { fg: (_role, text) => text, bg: (_role, text) => text, bold: text => text };
   const ctx = {
     cwd: dir, mode: 'tui',

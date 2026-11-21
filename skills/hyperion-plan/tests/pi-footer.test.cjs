@@ -159,7 +159,7 @@ async function harness(t, mode = 'tui') {
       } else widgets.delete(key);
     },
   } };
-  (await import('../dist/hyperion-plan-pi.js')).default(pi);
+  (await import('../dist/hyperion-plan-pi.ts')).default(pi);
   const emit = async name => { for (const fn of handlers.get(name) ?? []) await fn({}, ctx); };
   t.after(async () => { await emit('session_shutdown'); fs.rmSync(dir, { recursive: true, force: true }); });
   entries.push({ type: 'custom', customType: 'hyperion-plan.binding', data: { path: file, plan_id: saved.plan_id } });

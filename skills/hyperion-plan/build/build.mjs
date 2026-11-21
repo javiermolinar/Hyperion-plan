@@ -12,8 +12,10 @@ await build({
   entryPoints: ["src/browser.ts"], outfile: "dist/browser.js",
   bundle: true, platform: "browser", target: "es2022", format: "iife",
 });
+// Keep the .ts entry point so Pi transforms its imports and supplies the host peers.
+// A native ESM .js entry can resolve local development copies before Pi maps them.
 await build({
-  entryPoints: ["src/pi/extension.ts"], outfile: "dist/hyperion-plan-pi.js",
+  entryPoints: ["src/pi/extension.ts"], outfile: "dist/hyperion-plan-pi.ts",
   bundle: true, platform: "node", target: "node22", format: "esm",
   external: ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox", "proper-lockfile"],
   banner: { js: 'import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameFromFile } from "node:path"; const __dirname = __dirnameFromFile(__fileURLToPath(import.meta.url));' },

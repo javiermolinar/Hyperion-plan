@@ -89,7 +89,7 @@ test('unresolved legacy review is preserved rather than recovered or certified',
 });
 async function planTool(f, actor = 'coordinator', entries = []) {
   let tool, sequence = 0;
-  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.js')))).default;
+  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.ts')))).default;
   extension({ on() { return () => {}; }, registerTool(t) { if (t.name === 'hyperion_plan') tool = t; }, registerCommand() {}, registerMessageRenderer() {} });
   const ctx = { cwd: f.dir, mode: 'json', sessionManager: { getSessionId: () => actor, getBranch: () => entries } };
   return async (params, id = `provider/call:${++sequence}`) => (await tool.execute(id, { path: f.file, ...params }, undefined, undefined, ctx)).details;
@@ -235,7 +235,7 @@ for (const action of ['submit', 'checkpoint', 'plan-review']) test(`review fix F
 
 test('historical source tags never fence ordinary Pi tools or user bash', async t => {
   const f = fixture(t, 'code'), handlers = new Map();
-  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.js')))).default;
+  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.ts')))).default;
   extension({ on(name, handler) { const all = handlers.get(name) ?? []; all.push(handler); handlers.set(name, all); return () => {}; }, registerTool() {}, registerCommand() {}, registerMessageRenderer() {} });
   const tag = { type: 'custom', customType: 'hyperion.handover-source', data: { plan_path: f.file, plan_id: f.plan.plan_id } };
   const ctx = { sessionManager: { getSessionId: () => 'old-source', getEntries: () => [tag], getBranch: () => [] } };
@@ -257,14 +257,14 @@ test('optional delegation can be disabled without changing the required plan sur
   const before = process.env.HYPERION_DISABLE_AGENTS;
   try {
     process.env.HYPERION_DISABLE_AGENTS = '1';
-    const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.js')))).default, tools = [];
+    const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.ts')))).default, tools = [];
     extension({ on() { return () => {}; }, registerTool(t) { tools.push(t.name); }, registerCommand() {}, registerMessageRenderer() {} });
     assert.deepEqual(tools, ['hyperion_plan']);
   } finally { if (before === undefined) delete process.env.HYPERION_DISABLE_AGENTS; else process.env.HYPERION_DISABLE_AGENTS = before; }
 });
 test('retired review launch/setup exports and tools are absent', async () => {
   for (const bundle of ['pi-runner.js', 'pi-handover-journal.js', 'pi-handover-navigation.js', 'pi-handover-readiness.js']) assert.equal(fs.existsSync(path.join(root, 'dist', bundle)), false);
-  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.js')))).default;
+  const extension = (await import(pathToFileURL(path.join(root, 'dist/hyperion-plan-pi.ts')))).default;
   const tools = [];
   extension({ on() { return () => {}; }, registerTool(t) { tools.push(t.name); }, registerCommand() {}, registerMessageRenderer() {} });
   assert.deepEqual(tools.sort(), ['hyperion_agent', 'hyperion_plan']);
@@ -323,7 +323,7 @@ async function harness(t, mode = "tui") {
       },
     },
   };
-  (await import("../dist/hyperion-plan-pi.js")).default(pi);
+  (await import("../dist/hyperion-plan-pi.ts")).default(pi);
   t.after(() => events.get('session_shutdown')?.({}, ctx));
   return {
     dir, planPath, plan, entries, notifications, events, screens, messages, widgets, ctx, tool, command: pi.command,
@@ -666,7 +666,7 @@ async function harness(t) {
   const entries = []; let tool;
   const pi = { registerTool(v) { if (v.name === 'hyperion_plan') tool = v; }, registerCommand() {}, registerMessageRenderer() {},
     on() { return () => {}; }, appendEntry(customType, data) { entries.push({ customType, data }); } };
-  (await import('../dist/hyperion-plan-pi.js')).default(pi);
+  (await import('../dist/hyperion-plan-pi.ts')).default(pi);
   const ctx = { cwd: dir, mode: 'json', isIdle: () => false,
     sessionManager: { getSessionId: () => 'cancel-test', getBranch: () => entries }, ui: { notify() {} } };
   return { dir, entries, call: (params, signal) => tool.execute('cancel-test-request', params, signal, undefined, ctx) };
